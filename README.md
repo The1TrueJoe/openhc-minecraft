@@ -32,10 +32,14 @@ on the EA works the same way.
 
 ## What it needs from openHC
 
-An EA image with:
+This repo only holds what is specific to running Minecraft. Everything generic lives
+upstream in openHC, so it needs an EA image with:
 - the `usb-input` feature (xpad, joydev, uinput, gamepad HID drivers);
 - the sgx545ce driver with the GL-client bridge compat and the device LISR. Without
-  the LISR every GPU wait runs its 100 ms timeout and the game crawls at ~1 FPS.
+  the LISR every GPU wait runs its 100 ms timeout and the game crawls at ~1 FPS;
+- `S60sgx`, which brings the GPU's services up at boot, and `S03growfs`, which grows the
+  root filesystem to fill its eMMC partition;
+- the bus-id shim that loads libdrm itself.
 
 ## Install on a box
 
@@ -46,11 +50,8 @@ The box's busybox `wget` has no TLS, so push the box side from a computer, then 
 curl -L https://github.com/The1TrueJoe/openhc-minecraft/releases/latest/download/openhc-minecraft-ea.tar.gz | ssh root@<box> 'tar xzf - -C / && /opt/minecraft/bin/mc-install'
 ```
 
-`mc-install`:
-- grows the root filesystem to fill its eMMC partition. openHC writes a 512 MB
-  filesystem onto a 6 GB partition.
-- unpacks the runtime.
-- downloads the game from Mojang's servers. This repo ships no Mojang files.
+`mc-install` unpacks the runtime, then downloads the game from Mojang's servers. This
+repo ships no Mojang files.
 
 Then:
 

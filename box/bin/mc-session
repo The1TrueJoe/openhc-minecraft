@@ -4,8 +4,7 @@
 # The game runs in the i386 runtime under /opt/minecraft/rootfs (see
 # runtime/build-runtime.sh). A session:
 #   1. takes the panel from the on-screen web view (S95ohc-display), if it runs;
-#   2. makes sure the SGX microkernel is up (the first GPU client after boot
-#      cannot bring it up by itself) and copies the DDK's EGL/GLES into the root;
+#   2. copies the box's PowerVR DDK (EGL/GLES, from openHC) into the root;
 #   3. starts Xvfb (the game's window and input only — the picture goes to the
 #      panel through gl4es), mc-inputd (USB keyboards, mice and pads -> X) and
 #      the game;
@@ -80,7 +79,6 @@ run() {
 		/etc/init.d/S95ohc-display stop >/dev/null 2>&1
 		killall webview WPEWebProcess WPENetworkProcess 2>/dev/null
 	fi
-	[ -x /opt/sgx-i386/run.sh ] && /opt/sgx-i386/run.sh sgxinit >/dev/null 2>&1
 
 	rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
 	# -a 1 -t 0: no pointer acceleration — mc-inputd already shapes pad motion,

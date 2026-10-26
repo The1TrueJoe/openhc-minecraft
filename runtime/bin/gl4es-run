@@ -6,13 +6,11 @@
 # X (Xvfb) is only there for LWJGL's window and input.
 #   LIBGL_KEEPEGL  never eglTerminate the probe display — DDK 1.7 cannot
 #                  eglInitialize again in the same process (our gl4es patch).
-#   LIBGL_DEEPBIND=0  load the DDK without RTLD_DEEPBIND, so the bus-id shim's
-#                  drmOpen override (LD_PRELOAD) still reaches libsrv_um.
-# The shim is preloaded with libdrm right after it: the shim looks up the real
-# drmOpen with RTLD_NEXT, and libdrm is otherwise only dlopen'd later.
+#   LIBGL_DEEPBIND=0  load the DDK without RTLD_DEEPBIND, so openHC's bus-id
+#                  shim (LD_PRELOAD, from the box's DDK) still reaches libsrv_um.
 export LIBGL_KEEPEGL=1 LIBGL_DEEPBIND=0 LIBGL_FB=1 LIBGL_ES=2 LIBGL_GL=21 LIBGL_NOBANNER=1
 export LIBGL_EGL=/usr/lib/sgx/libEGL.so.1 LIBGL_GLES=/usr/lib/sgx/libGLESv2.so.2
 export LD_LIBRARY_PATH=/usr/lib/gl4es:/usr/lib/sgx${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-export LD_PRELOAD="/usr/lib/sgx/sgx-busidshim.so /usr/lib/i386-linux-gnu/libdrm.so.2"
+export LD_PRELOAD=/usr/lib/sgx/sgx-busidshim.so
 export DISPLAY=${DISPLAY:-:0}
 exec "$@"

@@ -40,7 +40,7 @@ PKGS=(
   xvfb xauth x11-xkb-utils xkb-data
   libx11-6 libxext6 libxcursor1 libxrandr2 libxxf86vm1 libxrender1 libxtst6 libxi6 libxinerama1
   libfreetype6 libfontconfig1 fonts-dejavu-core libasound2 libdrm2
-  ca-certificates wget unzip procps e2fsprogs
+  ca-certificates wget unzip procps
 )
 debootstrap --arch=i386 --variant=minbase --include="$(IFS=,; echo "${PKGS[*]}")" \
   "$SUITE" "$R" "$MIRROR"
