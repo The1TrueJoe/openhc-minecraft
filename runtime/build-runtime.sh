@@ -45,30 +45,41 @@ PKGS=(
 debootstrap --arch=i386 --variant=minbase --include="$(IFS=,; echo "${PKGS[*]}")" \
   "$SUITE" "$R" "$MIRROR"
 
-# --- gl4es: build in the root against its own headers, then drop the toolchain ---
-git clone -q "$GL4ES_REPO" "$R/tmp/gl4es"
-git -C "$R/tmp/gl4es" checkout -q "$GL4ES_REF"
+# --- gl4es: built in a throwaway copy of the root, so no toolchain ships ---
+B="$OUT/build-root"
+rm -rf "$B"
+cp -a "$R" "$B"
+git clone -q "$GL4ES_REPO" "$B/tmp/gl4es"
+git -C "$B/tmp/gl4es" checkout -q "$GL4ES_REF"
 for p in "$HERE"/gl4es/*.patch; do
-  patch -d "$R/tmp/gl4es" -p1 --batch < "$p"
+  patch -d "$B/tmp/gl4es" -p1 --batch < "$p"
 done
-mount --bind /proc "$R/proc"
-trap 'umount "$R/proc" 2>/dev/null || true' EXIT
-cp /etc/resolv.conf "$R/etc/resolv.conf"
-BUILD_DEPS="build-essential cmake libx11-dev"
-chroot "$R" sh -ec "
+mount --bind /proc "$B/proc"
+trap 'umount "$B/proc" 2>/dev/null || true' EXIT
+cp /etc/resolv.conf "$B/etc/resolv.conf"
+chroot "$B" sh -ec "
   apt-get update -q
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $BUILD_DEPS
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends build-essential cmake libx11-dev
   cd /tmp/gl4es && mkdir -p build && cd build
   # -march=bonnell: the EA's Atom CE5310 (SSSE3, MOVBE). -DNO_GBM: no GBM here.
-  cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo -DNO_GBM=ON -DUSE_CLOCK=ON \
+  cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo -DNO_GBM=ON -DUSE_CLOCK=ON \\
         -DCMAKE_C_FLAGS='-march=bonnell -mtune=bonnell'
   make -j\$(nproc)
-  install -D -m 0755 ../lib/libGL.so.1 /usr/lib/gl4es/libGL.so.1
-  DEBIAN_FRONTEND=noninteractive apt-get purge -y -q --auto-remove $BUILD_DEPS
-  apt-get clean
-  rm -rf /tmp/gl4es /var/lib/apt/lists/*
 "
-umount "$R/proc"; trap - EXIT
+umount "$B/proc"; trap - EXIT
+install -D -m 0755 "$B/tmp/gl4es/lib/libGL.so.1" "$R/usr/lib/gl4es/libGL.so.1"
+rm -rf "$B"
+
+# --- trim the runtime ---
+# Xvfb depends on libGL for its GLX extension, which drags in Mesa's DRI
+# drivers and LLVM (~150 MB). Nothing here uses them: the game's GL is gl4es on
+# the SGX545, and Xvfb runs fine with GLX unable to find a driver.
+installed() { chroot "$R" dpkg-query -W -f='${Package}\n' "$@" 2>/dev/null; }
+drop=$(installed libgl1-mesa-dri libllvm15 libz3-4 libicu72 libxml2 libsensors5 libsensors-config \
+       libdrm-amdgpu1 libdrm-nouveau2 libdrm-radeon1 libdrm-intel1 libglx-mesa0 libgbm1 || true)
+[ -z "$drop" ] || chroot "$R" dpkg --purge --force-depends $drop
+rm -rf "$R"/usr/share/doc/* "$R"/usr/share/man/* "$R"/usr/share/info/* "$R"/usr/share/locale/* \
+       "$R"/var/cache/apt/*.bin "$R"/var/cache/apt/archives/*.deb "$R"/var/lib/apt/lists/*
 
 # --- Java 8, 32-bit ---
 mkdir -p "$R/opt/java"
