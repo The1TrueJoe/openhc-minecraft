@@ -1,0 +1,28 @@
+[package]
+name = "mc-inputd"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Feeds USB keyboards, mice and game controllers into the Minecraft X display (XTest)"
+
+[dependencies]
+libc = "0.2"
+x11rb = { version = "0.13", default-features = false, features = ["xtest"] }
+# mc-fetch: HTTPS on a box whose busybox wget has no TLS and that ships no curl
+# (same choice as openHC's ohc-updated: rustls + compiled-in Mozilla roots).
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+[[bin]]
+name = "mc-inputd"
+path = "src/main.rs"
+
+[[bin]]
+name = "mc-fetch"
+path = "src/fetch.rs"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

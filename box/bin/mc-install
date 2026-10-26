@@ -1,0 +1,74 @@
+#!/bin/sh
+# mc-install [RUNTIME] — install (or update) the game runtime and the game.
+#
+# RUNTIME is a runtime-i386.tar.xz path or URL; default: this repo's latest
+# release. Then the game itself is downloaded from Mojang by mc-get-game inside
+# the runtime. Re-running is safe: worlds, options.txt and already-downloaded
+# game files are kept.
+#
+# openHC writes a 512 MB root filesystem onto a 6 GB eMMC partition and leaves
+# the rest unused; the runtime and game need ~450 MB, so the filesystem is grown
+# to fill its partition first, with the runtime's own resize2fs (the image has
+# none). An online grow of a mounted ext4 is safe and needs no reboot.
+set -e
+M=/opt/minecraft
+R=$M/rootfs
+URL=https://github.com/The1TrueJoe/openhc-minecraft/releases/latest/download/runtime-i386.tar.xz
+SRC=${1:-$URL}
+NEED_MB=900
+
+log() { echo "mc-install: $*"; }
+free_mb() { df -m "$1" | awk 'NR==2 {print $4}'; }
+
+# 1. the runtime tarball, into RAM (/tmp is tmpfs)
+case "$SRC" in
+	http://*|https://*)
+		log "downloading $SRC"
+		"$M/bin/mc-fetch" "$SRC" /tmp/runtime-i386.tar.xz
+		TARBALL=/tmp/runtime-i386.tar.xz ;;
+	*)	TARBALL=$SRC ;;
+esac
+[ -r "$TARBALL" ] || { log "no runtime at $TARBALL"; exit 1; }
+
+# 2. room on /, then 3. unpack. When / is short, unpack into RAM first and grow
+#    the filesystem with the runtime's own resize2fs (in a chroot of it), then
+#    move the runtime into place. Game data under opt/minecraft survives a
+#    re-install: the tarball only carries the file list and launch info there.
+mkdir -p "$R"
+for m in dev proc sys tmp; do mountpoint -q "$R/$m" && umount "$R/$m" 2>/dev/null; done
+if [ "$(free_mb /)" -lt $NEED_MB ]; then
+	dev=$(sed -n 's/.*root=\([^ ]*\).*/\1/p' /proc/cmdline)
+	[ -b "$dev" ] || { log "root device '$dev' not found; free up ${NEED_MB} MB on / by hand"; exit 1; }
+	T=/tmp/mc-rt
+	rm -rf $T && mkdir -p $T
+	log "unpacking the runtime into RAM"
+	xz -dc "$TARBALL" | tar x -C $T
+	[ "$TARBALL" = /tmp/runtime-i386.tar.xz ] && rm -f "$TARBALL"
+	log "growing $dev to fill its partition"
+	mount --bind /dev $T/dev
+	mount -t proc proc $T/proc
+	chroot $T /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin resize2fs "$dev" || rc=$?
+	umount $T/proc $T/dev
+	[ -z "$rc" ] || { rm -rf $T; log "resize2fs failed ($rc)"; exit 1; }
+	log "/ now has $(free_mb /) MB free; moving the runtime into place"
+	cp -a $T/. "$R/"
+	rm -rf $T
+else
+	log "unpacking the runtime"
+	xz -dc "$TARBALL" | tar x -C "$R"
+	[ "$TARBALL" = /tmp/runtime-i386.tar.xz ] && rm -f "$TARBALL"
+fi
+cat "$R/etc/openhc-minecraft-runtime" 2>/dev/null
+
+# 4. the game, from Mojang
+for m in dev proc sys tmp; do
+	mountpoint -q "$R/$m" && continue
+	case $m in
+		proc) mount -t proc proc "$R/proc" ;;
+		sys)  mount -t sysfs sys "$R/sys" ;;
+		*)    mount --bind "/$m" "$R/$m" ;;
+	esac
+done
+cp -L /etc/resolv.conf "$R/etc/resolv.conf"
+chroot "$R" /usr/bin/env -i HOME=/root PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/mc-get-game
+log "done — start it with: mc-session start   (or enable autostart: touch $M/autostart)"

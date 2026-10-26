@@ -1,0 +1,32 @@
+#!/bin/bash
+# mc-get-game [VERSION] — download the vanilla client, its libraries, natives and
+# assets from Mojang into /opt/minecraft, using the list the runtime ships
+# (/opt/minecraft/<version>.files, made by mcfiles.py at build time). Re-runnable:
+# files already present are skipped.
+set -u
+V=${1:-1.7.10}
+G=/opt/minecraft
+LIST=$G/$V.files
+[ -r "$LIST" ] || { echo "mc-get-game: no $LIST" >&2; exit 1; }
+cd "$G"
+fetch() {
+  [ -s "$2" ] && return 0
+  mkdir -p "$(dirname "$2")"
+  local t; t=$(mktemp "$2.XXXX")
+  if wget -q -O "$t" "$1"; then mv -f "$t" "$2"; else rm -f "$t"; echo "mc-get-game: FAILED $1" >&2; return 1; fi
+}
+export -f fetch
+# Assets are shared by hash, so a hash can appear twice in one list: dedupe on
+# the destination before fanning out.
+sort -u -k2,2 "$LIST" | xargs -P 6 -n 2 bash -c 'fetch "$0" "$1"'
+# A second pass picks up anything a dropped connection left behind.
+missing=$(awk '{print $2}' "$LIST" | sort -u | while read -r p; do [ -s "$p" ] || echo "$p"; done | wc -l)
+if [ "$missing" -ne 0 ]; then
+  sort -u -k2,2 "$LIST" | xargs -P 2 -n 2 bash -c 'fetch "$0" "$1"'
+  missing=$(awk '{print $2}' "$LIST" | sort -u | while read -r p; do [ -s "$p" ] || echo "$p"; done | wc -l)
+fi
+[ "$missing" -eq 0 ] || { echo "mc-get-game: $missing files still missing" >&2; exit 1; }
+. "$G/$V.launch"
+mkdir -p "$G/natives"
+for j in $NATIVES; do unzip -o -q "$G/$j" -x 'META-INF/*' -d "$G/natives"; done
+echo "mc-get-game: minecraft $V ready"

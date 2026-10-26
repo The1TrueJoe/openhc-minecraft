@@ -1,0 +1,22 @@
+#!/bin/sh
+# Minecraft on the panel at boot — only when /opt/minecraft/autostart exists.
+#
+# Runs after S95ohc-display, so when both are on the game takes the panel and
+# hands it back to the web view when it exits. Without the flag this does
+# nothing at boot; mc-session start/stop still work by hand.
+M=/opt/minecraft
+
+case "$1" in
+	start)
+		[ -f $M/autostart ] || exit 0
+		[ -x $M/bin/mc-session ] || exit 0
+		$M/bin/mc-session start "$(cat $M/autostart 2>/dev/null | head -1)"
+		;;
+	stop)
+		[ -x $M/bin/mc-session ] && $M/bin/mc-session stop
+		;;
+	restart)
+		"$0" stop; sleep 1; "$0" start ;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

@@ -1,0 +1,130 @@
+#!/bin/sh
+# mc-session {start|stop|run|status} [USERNAME] — Minecraft on the HDMI/panel output.
+#
+# The game runs in the i386 runtime under /opt/minecraft/rootfs (see
+# runtime/build-runtime.sh). A session:
+#   1. takes the panel from the on-screen web view (S95ohc-display), if it runs;
+#   2. makes sure the SGX microkernel is up (the first GPU client after boot
+#      cannot bring it up by itself) and copies the DDK's EGL/GLES into the root;
+#   3. starts Xvfb (the game's window and input only — the picture goes to the
+#      panel through gl4es), mc-inputd (USB keyboards, mice and pads -> X) and
+#      the game;
+#   4. when the game exits, stops both and gives the panel back.
+# "start" runs all of that in the background (log: /var/log/minecraft.log),
+# "run" in the foreground, "stop" ends a running session.
+M=/opt/minecraft
+R=$M/rootfs
+PIDF=/run/mc-session.pid
+LOG=/var/log/minecraft.log
+DPY=:0
+
+log() { echo "mc-session: $*"; }
+
+# The DDK lives in one of openHC's i386 GPU sysroots. Copy only the DDK's own
+# libraries: those sysroots also carry their own libc, which must not shadow the
+# runtime's.
+ddk_sync() {
+	for d in /opt/sgx-i386-wpe/usr/lib /opt/sgx-i386/usr/lib; do
+		[ -e "$d/libsrv_um.so" ] || [ -e "$d/libsrv_um.so.1.7.862890" ] || continue
+		mkdir -p "$R/usr/lib/sgx"
+		for f in "$d"/libEGL.* "$d"/libGLES* "$d"/libIMGegl.* "$d"/libsrv_* "$d"/libusc.* \
+			 "$d"/libglslcompiler.* "$d"/libpvr* "$d"/libPVR* "$d"/sgx-busidshim.so; do
+			[ -e "$f" ] || [ -L "$f" ] || continue
+			cp -a "$f" "$R/usr/lib/sgx/"
+		done
+		# libIMGegl loads the window system by this fixed name; point it at
+		# the framebuffer backend whatever the sysroot did.
+		ln -sf libpvrPVR2D_LINUXFBWSEGL.so.1.7.862890 "$R/usr/lib/sgx/libpvrPVR2D_DRIWSEGL.so"
+		[ -r /etc/powervr.ini ] && cp /etc/powervr.ini "$R/etc/powervr.ini"
+		return 0
+	done
+	log "no SGX545 DDK on this box (/opt/sgx-i386*) — not an openHC EA image?"
+	return 1
+}
+
+mounts() {
+	for m in dev proc sys tmp; do
+		mountpoint -q "$R/$m" && continue
+		mkdir -p "$R/$m"
+		case $m in
+			proc) mount -t proc proc "$R/proc" ;;
+			sys)  mount -t sysfs sys "$R/sys" ;;
+			*)    mount --bind "/$m" "$R/$m" ;;
+		esac
+	done
+	cp -L /etc/resolv.conf "$R/etc/resolv.conf" 2>/dev/null
+	mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+}
+
+inchroot() {
+	chroot "$R" /usr/bin/env -i HOME=/root TERM=linux DISPLAY=$DPY \
+		PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin "$@"
+}
+
+panel_size() {
+	s=$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)
+	W=${s%,*}; H=${s#*,}
+	[ -n "$W" ] && [ -n "$H" ] || { W=720; H=480; }
+}
+
+run() {
+	[ -x "$R/usr/local/bin/minecraft" ] || { log "not installed — run mc-install"; exit 1; }
+	ddk_sync || exit 1
+	mounts
+	panel_size
+
+	# The web view and the game cannot share the panel.
+	display_was_on=0
+	if [ -f /run/ohc-display.pid ] && kill -0 "$(cat /run/ohc-display.pid)" 2>/dev/null; then
+		display_was_on=1
+		/etc/init.d/S95ohc-display stop >/dev/null 2>&1
+		killall webview WPEWebProcess WPENetworkProcess 2>/dev/null
+	fi
+	[ -x /opt/sgx-i386/run.sh ] && /opt/sgx-i386/run.sh sgxinit >/dev/null 2>&1
+
+	rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
+	# -a 1 -t 0: no pointer acceleration — mc-inputd already shapes pad motion,
+	# and a mouse should move the camera 1:1.
+	inchroot /usr/bin/Xvfb $DPY -screen 0 "${W}x${H}x24" -nolisten tcp -a 1 -t 0 \
+		>/tmp/mc-xvfb.log 2>&1 &
+	xvfb=$!
+	i=0; while [ ! -S /tmp/.X11-unix/X0 ] && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done
+
+	DISPLAY=$DPY "$M/bin/mc-inputd" &
+	inputd=$!
+
+	log "playing on ${W}x${H}"
+	MC_WIDTH=$W MC_HEIGHT=$H inchroot /usr/bin/env MC_WIDTH=$W MC_HEIGHT=$H \
+		/usr/local/bin/minecraft "${1:-Player}"
+	log "game exited ($?)"
+
+	kill $inputd $xvfb 2>/dev/null
+	wait $inputd $xvfb 2>/dev/null
+	if [ $display_was_on = 1 ]; then
+		/etc/init.d/S95ohc-display start >/dev/null 2>&1
+	elif [ -x /etc/init.d/S01splash ]; then
+		/etc/init.d/S01splash start >/dev/null 2>&1
+	fi
+}
+
+case "$1" in
+	run)
+		shift; run "$@" ;;
+	start)
+		shift
+		if [ -f $PIDF ] && kill -0 "$(cat $PIDF)" 2>/dev/null; then
+			log "already running"; exit 0
+		fi
+		setsid "$0" run "$@" </dev/null >>$LOG 2>&1 &
+		echo $! > $PIDF ;;
+	stop)
+		# Ending the game ends the session; run() then cleans up behind it.
+		killall java 2>/dev/null
+		sleep 2
+		[ -f $PIDF ] && kill "$(cat $PIDF)" 2>/dev/null
+		rm -f $PIDF ;;
+	status)
+		if [ -f $PIDF ] && kill -0 "$(cat $PIDF)" 2>/dev/null; then echo running; else echo stopped; exit 1; fi ;;
+	*)
+		echo "usage: $0 {start|stop|run|status} [USERNAME]"; exit 1 ;;
+esac

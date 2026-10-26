@@ -1,0 +1,36 @@
+#!/bin/bash
+# minecraft [USERNAME] — start vanilla Minecraft on the panel, offline mode.
+#
+# Java 8, 32-bit (the GPU userspace is 32-bit); LWJGL 2 opens its window on the
+# Xvfb display and gets its GL from gl4es (gl4es-run), which draws to the panel.
+# Env: MC_VERSION (1.7.10), MC_XMX (heap, 768M), MC_WIDTH/MC_HEIGHT (panel size).
+V=${MC_VERSION:-1.7.10}
+G=/opt/minecraft
+. "$G/$V.launch" || exit 1
+cd "$G"
+# First run: settings that suit a 1.2 GHz Atom and a 720x480 panel. The game
+# rewrites this file itself afterwards, so later changes made in-game stick.
+[ -f options.txt ] || cat > options.txt <<OPT
+renderDistance:4
+fancyGraphics:false
+ao:0
+particles:2
+clouds:false
+fboEnable:false
+enableVsync:false
+mipmapLevels:0
+maxFps:60
+guiScale:2
+pauseOnLostFocus:false
+snooperEnabled:false
+OPT
+CPA=$(echo "$CP" | sed "s|libraries/|$G/libraries/|g; s|versions/|$G/versions/|g")
+exec /usr/local/bin/gl4es-run /opt/java/jre8/bin/java \
+  -Xms256M -Xmx"${MC_XMX:-768M}" -XX:+UseConcMarkSweepGC \
+  -Djava.library.path="$G/natives" \
+  -Dorg.lwjgl.opengl.libname=/usr/lib/gl4es/libGL.so.1 \
+  -cp "$CPA" "$MAIN" \
+  --username "${1:-Player}" --version "$V" --gameDir "$G" --assetsDir "$G/assets" \
+  --assetIndex "$ASSET_INDEX" --uuid 00000000000000000000000000000000 --accessToken 0 \
+  --userProperties {} --userType legacy \
+  --width "${MC_WIDTH:-720}" --height "${MC_HEIGHT:-480}"
