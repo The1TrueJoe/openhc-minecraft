@@ -116,10 +116,16 @@ case "$1" in
 		setsid "$0" run "$@" </dev/null >>$LOG 2>&1 &
 		echo $! > $PIDF ;;
 	stop)
-		# Ending the game ends the session; run() then cleans up behind it.
+		# Ending the game ends the session; run() then cleans up behind it
+		# (Xvfb, mc-inputd, handing the panel back). Give it time to, and only
+		# then sweep whatever is left.
 		killall java 2>/dev/null
-		sleep 2
-		[ -f $PIDF ] && kill "$(cat $PIDF)" 2>/dev/null
+		if [ -f $PIDF ]; then
+			pid=$(cat $PIDF); i=0
+			while kill -0 "$pid" 2>/dev/null && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
+			kill "$pid" 2>/dev/null
+		fi
+		killall Xvfb mc-inputd 2>/dev/null
 		rm -f $PIDF ;;
 	status)
 		if [ -f $PIDF ] && kill -0 "$(cat $PIDF)" 2>/dev/null; then echo running; else echo stopped; exit 1; fi ;;
