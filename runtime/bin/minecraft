@@ -25,8 +25,11 @@ pauseOnLostFocus:false
 snooperEnabled:false
 OPT
 CPA=$(echo "$CP" | sed "s|libraries/|$G/libraries/|g; s|versions/|$G/versions/|g")
+# Headless AWT: the game's window is LWJGL's own X window, so it needs no AWT
+# display — and initialising AWT's X11 toolkit in this process (with the DDK's
+# bus-id shim preloaded) segfaults the JVM before the game starts.
 exec /usr/local/bin/gl4es-run /opt/java/jre8/bin/java \
-  -Xms256M -Xmx"${MC_XMX:-768M}" -XX:+UseConcMarkSweepGC \
+  -Xms256M -Xmx"${MC_XMX:-768M}" -XX:+UseConcMarkSweepGC -Djava.awt.headless=true \
   -Djava.library.path="$G/natives" \
   -Dorg.lwjgl.opengl.libname=/usr/lib/gl4es/libGL.so.1 \
   -cp "$CPA" "$MAIN" \

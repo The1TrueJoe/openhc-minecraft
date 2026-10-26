@@ -43,11 +43,11 @@ upstream in openHC, so it needs an EA image with:
 
 ## Install on a box
 
-The box's busybox `wget` has no TLS, so push the box side from a computer, then let
+The box's busybox `wget` has no TLS (and its `tar` has no `-z`), so push the box side from a computer, then let
 `mc-install` (which brings its own HTTPS client) do the rest:
 
 ```bash
-curl -L https://github.com/The1TrueJoe/openhc-minecraft/releases/latest/download/openhc-minecraft-ea.tar.gz | ssh root@<box> 'tar xzf - -C / && /opt/minecraft/bin/mc-install'
+curl -L https://github.com/The1TrueJoe/openhc-minecraft/releases/latest/download/openhc-minecraft-ea.tar.gz | gunzip | ssh root@<box> 'tar xf - -C / && /opt/minecraft/bin/mc-install'
 ```
 
 `mc-install` unpacks the runtime, then downloads the game from Mojang's servers. This
