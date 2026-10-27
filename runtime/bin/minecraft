@@ -28,8 +28,14 @@ CPA=$(echo "$CP" | sed "s|libraries/|$G/libraries/|g; s|versions/|$G/versions/|g
 # Headless AWT: the game's window is LWJGL's own X window, so it needs no AWT
 # display — and initialising AWT's X11 toolkit in this process (with the DDK's
 # bus-id shim preloaded) segfaults the JVM before the game starts.
+# -Xss1M: a 32-bit JVM's default 320K thread stack overflows in world generation's
+# neighbour updates (the official launcher passes the same on x86).
+# processReaperUseDefaultStackSize: Java 8 starts its process reaper on a 32K
+# stack, too small once the DDK's thread-local storage is loaded — and the
+# integrated server execs `id -u` (netty) when a world starts.
 exec /usr/local/bin/gl4es-run /opt/java/jre8/bin/java \
-  -Xms256M -Xmx"${MC_XMX:-768M}" -XX:+UseConcMarkSweepGC -Djava.awt.headless=true \
+  -Xss1M -Xms256M -Xmx"${MC_XMX:-768M}" -XX:+UseConcMarkSweepGC -Djava.awt.headless=true \
+  -Djdk.lang.processReaperUseDefaultStackSize=true \
   -Djava.library.path="$G/natives" \
   -Dorg.lwjgl.opengl.libname=/usr/lib/gl4es/libGL.so.1 \
   -cp "$CPA" "$MAIN" \
