@@ -68,6 +68,11 @@ player name, write it into that file.
 The game runs in offline mode. Singleplayer works, and so do servers with
 `online-mode=false`.
 
+On its first run the game starts with light video settings and a render distance
+of 3 chunks. The GPU's frame rate follows how much world it draws: on an EA1,
+2 chunks run at about 54 FPS, 3 at about 42 and 4 at about 29. Change it in
+Options → Video Settings; the game keeps what you pick.
+
 ## Controller layout (Xbox)
 
 | | In the world | In menus / inventory |
