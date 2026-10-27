@@ -12,6 +12,10 @@
  *
  * What to draw comes from mc-inputd, which owns the state: /tmp/mc-ui (struct
  * mcui below; must match inputd/src/ui.rs, as must the keyboard layout).
+ *
+ * It also makes every frame opaque. The game clears to alpha 0 and the EA's
+ * display plane blends the framebuffer by its alpha, so the sky (and anything
+ * else left at alpha < 1) came out black on HDMI.
  */
 #define _GNU_SOURCE
 #include <GL/gl.h>
@@ -355,12 +359,31 @@ static void overlay(void)
 /* ---- the hooks ---- */
 typedef void *(*getproc_t)(const GLubyte *);
 
+/* Set alpha to 1 everywhere, colour untouched: one alpha-only clear. */
+static void opaque(void)
+{
+	GLboolean mask[4], scissor = glIsEnabled(GL_SCISSOR_TEST);
+	GLfloat clear[4];
+
+	glGetBooleanv(GL_COLOR_WRITEMASK, mask);
+	glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
+	glDisable(GL_SCISSOR_TEST);
+	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
+	glClearColor(0, 0, 0, 1);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glClearColor(clear[0], clear[1], clear[2], clear[3]);
+	glColorMask(mask[0], mask[1], mask[2], mask[3]);
+	if (scissor)
+		glEnable(GL_SCISSOR_TEST);
+}
+
 void glXSwapBuffers(void *dpy, unsigned long drawable)
 {
 	static void (*real)(void *, unsigned long);
 	if (!real)
 		real = (void (*)(void *, unsigned long))dlsym(RTLD_NEXT, "glXSwapBuffers");
 	overlay();
+	opaque();
 	real(dpy, drawable);
 }
 
