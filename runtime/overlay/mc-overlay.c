@@ -51,7 +51,7 @@ static const struct mcui *state(void)
 	return ui && ui->magic == MCUI_MAGIC ? (const struct mcui *)ui : NULL;
 }
 
-/* ---- the pointer: an arrow, 1 outline, . fill, drawn at 2x ---- */
+/* ---- the pointer: an arrow, 1 outline, . fill, drawn at POINTER_SCALE ---- */
 static const char *arrow[] = {
 	"1           ",
 	"11          ",
@@ -73,6 +73,9 @@ static const char *arrow[] = {
 };
 #define ARROW_W 16
 #define ARROW_H 32
+/* 1: the arrow's own 12x17 pixels, a desktop-sized pointer on the 720x480 panel
+ * (an HDMI TV scales the whole picture up anyway); 2 was too big. */
+#define POINTER_SCALE 1
 
 /* ---- the keyboard; layout as in inputd/src/ui.rs ---- */
 static const char *rows[2][4] = {
@@ -250,7 +253,7 @@ static void draw_pointer(const struct mcui *s)
 	glEnable(GL_TEXTURE_2D);
 	glBindTexture(GL_TEXTURE_2D, tex_arrow);
 	glColor4f(1, 1, 1, 1);
-	float x = s->x, y = s->y, w = ARROW_W * 2, h = ARROW_H * 2;
+	float x = s->x, y = s->y, w = ARROW_W * POINTER_SCALE, h = ARROW_H * POINTER_SCALE;
 	glBegin(GL_QUADS);
 	glTexCoord2f(0, 0); glVertex2f(x, y);
 	glTexCoord2f(1, 0); glVertex2f(x + w, y);
