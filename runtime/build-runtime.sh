@@ -45,7 +45,7 @@ PKGS=(
 debootstrap --arch=i386 --variant=minbase --include="$(IFS=,; echo "${PKGS[*]}")" \
   "$SUITE" "$R" "$MIRROR"
 
-# --- gl4es: built in a throwaway copy of the root, so no toolchain ships ---
+# --- gl4es and the overlay: built in a throwaway copy of the root, so no toolchain ships ---
 B="$OUT/build-root"
 rm -rf "$B"
 cp -a "$R" "$B"
@@ -54,20 +54,30 @@ git -C "$B/tmp/gl4es" checkout -q "$GL4ES_REF"
 for p in "$HERE"/gl4es/*.patch; do
   patch -d "$B/tmp/gl4es" -p1 --batch < "$p"
 done
+cp -r "$HERE/overlay" "$B/tmp/overlay"
 mount --bind /proc "$B/proc"
 trap 'umount "$B/proc" 2>/dev/null || true' EXIT
 cp /etc/resolv.conf "$B/etc/resolv.conf"
 chroot "$B" sh -ec "
   apt-get update -q
-  DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends build-essential cmake libx11-dev
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends build-essential cmake libx11-dev \\
+    libfreetype-dev pkg-config
   cd /tmp/gl4es && mkdir -p build && cd build
   # -march=bonnell: the EA's Atom CE5310 (SSSE3, MOVBE). -DNO_GBM: no GBM here.
   cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo -DNO_GBM=ON -DUSE_CLOCK=ON \\
         -DCMAKE_C_FLAGS='-march=bonnell -mtune=bonnell'
   make -j\$(nproc)
+  # The overlay is LWJGL's libGL.so.1 and needs gl4es -- also libGL.so.1 -- under
+  # it. It names gl4es by path: link against a stub whose soname is that path.
+  cd /tmp/overlay
+  gcc -shared -o libgl4es-stub.so -Wl,-soname,/usr/lib/gl4es/libGL.so.1 -x c /dev/null
+  gcc -O2 -march=bonnell -Wall -shared -fPIC -Wl,-soname,libGL.so.1 -o libGL.so.1 mc-overlay.c \\
+      -I/tmp/gl4es/include \$(pkg-config --cflags freetype2) \\
+      -Wl,--no-as-needed ./libgl4es-stub.so \$(pkg-config --libs freetype2) -ldl
 "
 umount "$B/proc"; trap - EXIT
 install -D -m 0755 "$B/tmp/gl4es/lib/libGL.so.1" "$R/usr/lib/gl4es/libGL.so.1"
+install -D -m 0755 "$B/tmp/overlay/libGL.so.1" "$R/usr/lib/mc-overlay/libGL.so.1"
 rm -rf "$B"
 
 # --- trim the runtime ---

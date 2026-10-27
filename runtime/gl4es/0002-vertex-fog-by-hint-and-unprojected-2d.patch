@@ -1,0 +1,417 @@
+From: openhc-minecraft
+Subject: [PATCH] FPE: per-vertex fog by GL_FOG_HINT, unprojected 2D sampling when q is 1
+
+GL_FOG_HINT was ignored on ES2 backends; fog was always computed per pixel,
+from a highp varying and a length() in every fragment. Fixed-function GL lets
+fog be per vertex, and the code for it was there but compiled out: it is now
+chosen per state, for GL_FOG_HINT GL_FASTEST, or for GL_DONT_CARE when
+LIBGL_VERTEXFOG=1. On a PowerVR SGX545 that is ~10% more frame rate in
+Minecraft, which has fog on everything.
+
+Also: when a 2D texture unit's coordinate q is known to be 1 (no texgen on Q,
+an affine texture matrix, at most 3 components, or a display list whose q are
+all 1), texture2D on .st can replace texture2DProj, which some GPUs prefetch.
+Off by default (LIBGL_TEX2DNOPROJ=1 turns it on): on SGX545 with DDK 1.7 the
+plain lookups lock the GPU up repeatedly.
+
+---
+diff --git a/src/gl/fpe.c b/src/gl/fpe.c
+index c21bcf1f..8def62ed 100644
+--- a/src/gl/fpe.c
++++ b/src/gl/fpe.c
+@@ -41,6 +41,7 @@ void free_scratch(scratch_t* scratch) {
+ void fpe_Init(glstate_t *glstate) {
+     // initialize cache
+     glstate->fpe_cache = fpe_NewCache();
++    glstate->fog_hint = GL_DONT_CARE;
+ }
+ 
+ void fpe_Dispose(glstate_t *glstate) {
+@@ -193,6 +194,7 @@ void APIENTRY_GL4ES fpe_ReleventState(fpe_state_t *dest, fpe_state_t *src, int f
+     // individual textures
+     for (int i=0; i<MAX_TEX; i++) {
+         if(dest->texture[i].textype==0) { // texture is off
++            dest->texture[i].texnoproj = 0;
+             dest->texture[i].texmat = 0;
+             dest->texture[i].texformat = 0;
+             dest->texture[i].texadjust = 0;
+@@ -240,6 +242,7 @@ void APIENTRY_GL4ES fpe_ReleventState(fpe_state_t *dest, fpe_state_t *src, int f
+     if(dest->fog && dest->fogsource==FPE_FOG_SRC_COORD)
+         dest->fogdist = 0;
+     if(!fixed || !dest->fog) {
++        dest->fogvertex = 0;
+         dest->fogmode = 0;
+         dest->fogsource = 0;
+         dest->fogdist = 0;
+@@ -263,6 +266,7 @@ void APIENTRY_GL4ES fpe_ReleventState(fpe_state_t *dest, fpe_state_t *src, int f
+             dest->texture[i].texmat = 0;
+             dest->texture[i].texadjust = 0;
+             dest->texture[i].textype = 0;
++            dest->texture[i].texnoproj = 0;
+         }
+         dest->colorsum = 0;
+         dest->normalize = 0;
+@@ -1051,6 +1055,23 @@ int fpe_gettexture(int TMU) {
+     return target;
+ }
+ 
++// Is the q of texture unit i's coordinates known to be 1 for this draw? Then a 2D
++// texture can be sampled with texture2D on .st instead of texture2DProj: on some
++// GPUs (PowerVR SGX) a projected lookup is a dependent read, a plain one is not.
++static int fpe_texcoord_q_is_one(int i) {
++    if(glstate->fpe_state->texgen[i].texgen_q)
++        return 0;
++    if(glstate->fpe_state->texture[i].texmat) {
++        const GLfloat *m = getTexMat(i);    // column-major: q' = m[3]s + m[7]t + m[11]r + m[15]q
++        if(m[3]!=0.f || m[7]!=0.f || m[11]!=0.f || m[15]!=1.f)
++            return 0;
++    }
++    const vertexattrib_t *v = &glstate->vao->vertexattrib[ATT_MULTITEXCOORD0+i];
++    if(v->enabled)
++        return v->size<4;
++    return glstate->vavalue[ATT_MULTITEXCOORD0+i][3]==1.f;
++}
++
+ void realize_glenv(int ispoint, int first, int count, GLenum type, const void* indices, scratch_t* scratch) {
+     // the handling of GL_BGRA size of GL_DOUBLE using 1 scratch in not ideal, and a waste when dealing with Buffers
+     // TODO: have the scratch buffer part of the VBO, and tag it dirty when buffer is changed (or always dirty for VBO 0)
+@@ -1091,6 +1112,14 @@ void realize_glenv(int ispoint, int first, int count, GLenum type, const void* i
+         }
+         glstate->fpe_bound_changed = 0;
+     }
++    if(!glstate->glsl->program) {
++        for(int i=0; i<hardext.maxtex; i++)
++            glstate->fpe_state->texture[i].texnoproj = globals4es.tex2dnoproj
++                && (glstate->fpe_state->texture[i].textype==FPE_TEX_2D)
++                && fpe_texcoord_q_is_one(i);
++        glstate->fpe_state->fogvertex = (glstate->fog_hint==GL_FASTEST)
++                || (glstate->fog_hint==GL_DONT_CARE && globals4es.vertexfog);
++    }
+     // activate program if needed
+     if(gl4es_glIsProgram(glstate->glsl->program)) {
+         // but first, check if some fixedpipeline state (like GL_ALPHA_TEST) need to alter the original program
+diff --git a/src/gl/fpe.h b/src/gl/fpe.h
+index 4c51179f..9bc2614c 100644
+--- a/src/gl/fpe.h
++++ b/src/gl/fpe.h
+@@ -149,6 +149,7 @@ typedef struct fpe_texture_s {
+   unsigned int textype:3;               // textures type stored on 3 bits
+   unsigned int texadjust:1;             // flags if texture need adjustement
+   unsigned int texformat:3;             // textures (simplified) internal format on 3 bits
++  unsigned int texnoproj:1;             // 2D texture whose texcoord q is known to be 1: sampled without projection
+ } fpe_texture_t;
+ 
+ typedef struct fpe_texenv_s {
+@@ -188,6 +189,7 @@ typedef struct fpe_state_s {
+     unsigned int fogdist:2;              // fog distance mode
+     unsigned int fogsource:1;            // fog source
+     unsigned int fog:1;                  // Fog enabled or not
++    unsigned int fogvertex:1;            // Fog computed per vertex (GL_FOG_HINT GL_FASTEST, or LIBGL_VERTEXFOG)
+     unsigned int colorsum:1;             // secondary color enabled
+     unsigned int lighting:1;             // global lighting enabled
+     unsigned int normalize:1;            // normalization
+diff --git a/src/gl/fpe_cache.c b/src/gl/fpe_cache.c
+index 4f16639e..7e3f5603 100644
+--- a/src/gl/fpe_cache.c
++++ b/src/gl/fpe_cache.c
+@@ -31,7 +31,7 @@
+ #endif
+ 
+ static const char PSA_SIGN[] = "GL4ES PrecompiledShaderArchive";
+-#define CACHE_VERSION 112
++#define CACHE_VERSION 113
+ 
+ static kh_inline khint_t _hash_fpe(fpe_state_t *p)
+ {
+diff --git a/src/gl/fpe_shader.c b/src/gl/fpe_shader.c
+index dbe87a7c..02394224 100644
+--- a/src/gl/fpe_shader.c
++++ b/src/gl/fpe_shader.c
+@@ -22,14 +22,23 @@ static int comments = 1;
+ 
+ #define ShadAppend(S) shad = gl4es_append(shad, &shad_cap, S)
+ 
+-//                           2D   Rectangle    3D   CubeMap  Stream
+-const char* texvecsize[] = {"vec4", "vec2", "vec2", "vec3", "vec2"};
+-const char* texxyzsize[] = {"stpq", "st",    "st",  "stp",   "st"};
+-//                          2D              Rectangle      3D          CubeMap          Stream
+-const char* texname[] = {"texture2DProj", "texture2D", "texture2D", "textureCube", "textureStreamIMG"};    // textureRectange and 3D are emulated with 2D
+-const char* texnoproj[] = {"texture2D", "texture2D", "texture2D", "textureCube", "textureStreamIMG"};    // textureRectange and 3D are emulated with 2D
+-const char* texsampler[] = {"sampler2D", "sampler2D", "sampler2D", "samplerCube", "samplerStreamIMG"};
+-int texnsize[] = {2, 2, 3, 3, 2};
++// The last kind is a 2D texture whose texcoord q is known to be 1 (texnoproj): sampled
++// with a plain texture2D on .st, which some GPUs can prefetch where a projected one cannot.
++#define FPE_TEX_2D_NOPROJ 6
++//                           2D   Rectangle    3D   CubeMap  Stream  2D(q=1)
++const char* texvecsize[] = {"vec4", "vec2", "vec2", "vec3", "vec2", "vec2"};
++const char* texxyzsize[] = {"stpq", "st",    "st",  "stp",   "st", "st"};
++//                          2D              Rectangle      3D          CubeMap          Stream             2D(q=1)
++const char* texname[] = {"texture2DProj", "texture2D", "texture2D", "textureCube", "textureStreamIMG", "texture2D"};    // textureRectange and 3D are emulated with 2D
++const char* texnoproj[] = {"texture2D", "texture2D", "texture2D", "textureCube", "textureStreamIMG", "texture2D"};    // textureRectange and 3D are emulated with 2D
++const char* texsampler[] = {"sampler2D", "sampler2D", "sampler2D", "samplerCube", "samplerStreamIMG", "sampler2D"};
++int texnsize[] = {2, 2, 3, 3, 2, 2};
++
++// the kind used to pick the names above for unit i
++static int tex_kind(fpe_state_t *state, int i) {
++    int t = state->texture[i].textype;
++    return (t==FPE_TEX_2D && state->texture[i].texnoproj)?FPE_TEX_2D_NOPROJ:t;
++}
+ const char texcoordname[] = {'s', 't', 'r', 'q'};
+ const char texcoordNAME[] = {'S', 'T', 'R', 'Q'};
+ const char texcoordxy[] = {'x', 'y', 'z', 'w'};
+@@ -328,12 +337,12 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
+         }
+     }
+     if(fog) {
+-        #if 0   // vertex fog
++        if(state->fogvertex) { // vertex fog
+         ShadAppend("varying mediump float FogF;\n");
+         headers++;
+         if(fogsource==FPE_FOG_SRC_DEPTH && need_vertex<1)
+             need_vertex = 1;
+-        #else   // pixel fog
++        } else { // pixel fog
+         if(fogsource==FPE_FOG_SRC_COORD)
+             sprintf(buff, "varying %s float FogSrc;\n", fogp);
+         else {
+@@ -346,11 +355,11 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
+             }
+         }
+         ShadAppend(buff);
+-        #endif
++        }
+     }
+     // textures coordinates
+     for (int i=0; i<hardext.maxtex; i++) {
+-        int t = state->texture[i].textype;
++        int t = tex_kind(state, i);
+         if(need)
+             t = (need->need_texs&(1<<i))?1:0;
+         if(t) {
+@@ -603,7 +612,7 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
+     if(texmats)
+         ShadAppend("vec4 tmp_tex;\n");
+     for (int i=0; i<hardext.maxtex; i++) {
+-        int t = state->texture[i].textype;
++        int t = tex_kind(state, i);
+         if(need && (need->need_texs&(1<<i)) && t==0)
+             t = 1;
+         if(need && !(need->need_texs&(1<<i)))
+@@ -772,7 +781,7 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
+             sprintf(buff, "// Fog On: mode=%X, source=%X distance=%X\n", fogmode, fogsource, fogdist);
+             ShadAppend(buff);
+         }
+-        #if 0    // vertex fog
++        if(state->fogvertex) { // vertex fog
+         char fogsrc[50];
+         if(fogsource==FPE_FOG_SRC_COORD)
+             strcpy(fogsrc, "gl_FogCoord");
+@@ -794,7 +803,7 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
+                 ShadAppend("FogF = clamp((gl_Fog.end - fog_c) * gl_Fog.scale, 0., 1.);\n");
+                 break;
+         }
+-        #else   // pixel fog
++        } else { // pixel fog
+         if(fogsource==FPE_FOG_SRC_COORD)
+             sprintf(buff, "FogSrc = gl_FogCoord;\n");
+         else switch(fogdist) {
+@@ -803,7 +812,7 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
+             default: sprintf(buff, "FogSrc = vertex.z;\n");
+         }
+         ShadAppend(buff);
+-        #endif
++        }
+     }
+         
+ 
+@@ -884,10 +893,10 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+         }
+     }
+     if(fog) {
+-        #if 0   // vertex fog
++        if(state->fogvertex) { // vertex fog
+         ShadAppend("varying mediump float FogF;\n");
+         headers++;
+-        #else   // pixel fog
++        } else { // pixel fog
+         if(fogsource==FPE_FOG_SRC_COORD) {
+             sprintf(buff, "varying %s float FogSrc;\n", fogp);
+         } else switch(fogdist) {
+@@ -896,7 +905,7 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+             default: sprintf(buff, "varying %s float FogSrc;\n", fogp);
+         }
+         ShadAppend(buff);
+-        #endif
++        }
+     }
+     if(planes) {
+         //ShadAppend("varying vec4 clipvertex;\n");
+@@ -910,7 +919,7 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+     }
+     // textures coordinates
+     for (int i=0; i<hardext.maxtex; i++) {
+-        int t = state->texture[i].textype;
++        int t = tex_kind(state, i);
+         if(point && !pointsprite) t=0;
+         if(!is_default)
+             if(t && !need->need_texs&(1<<i))
+@@ -985,7 +994,7 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+     if(texturing && (!point || pointsprite) ) {
+         // fetch textures first
+         for (int i=0; i<hardext.maxtex; i++) {
+-            int t = state->texture[i].textype;
++            int t = tex_kind(state, i);
+             if(t) {
+                 if(point && pointsprite && pointsprite_coord) {
+                     if(pointsprite_upper)
+@@ -1387,9 +1396,9 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+             sprintf(buff, "// Fog On: mode=%X, source=%X\n", fogmode, fogsource);
+             ShadAppend(buff);
+         }
+-        #if 0   // vertex fog
++        if(state->fogvertex) { // vertex fog
+         ShadAppend("fColor.rgb = mix(gl_Fog.color.rgb, fColor.rgb, FogF);\n");
+-        #else   // pixel fog
++        } else { // pixel fog
+         char fogsrc[50];
+         if(fogsource==FPE_FOG_SRC_COORD)
+             strcpy(fogsrc, "FogSrc");
+@@ -1413,7 +1422,7 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+         }
+         ShadAppend(buff);
+         ShadAppend("fColor.rgb = mix(gl_Fog.color.rgb, fColor.rgb, FogF);\n");
+-        #endif
++        }
+     }
+     //Blend
+     if(shaderblend) {
+diff --git a/src/gl/getter.c b/src/gl/getter.c
+index 4fa53566..6ee3ea77 100644
+--- a/src/gl/getter.c
++++ b/src/gl/getter.c
+@@ -753,7 +753,7 @@ int gl4es_commonGet(GLenum pname, GLfloat *params) {
+             break;
+         case GL_FOG_HINT:
+             if(hardext.esversion==1) return 0; // fall back to actual glGet
+-            *params=GL_DONT_CARE;
++            *params=glstate->fog_hint;
+             break;
+         case GL_TEXTURE_COMPRESSION_HINT:
+             *params=GL_DONT_CARE;
+diff --git a/src/gl/glstate.h b/src/gl/glstate.h
+index fa852ea1..29868132 100644
+--- a/src/gl/glstate.h
++++ b/src/gl/glstate.h
+@@ -43,6 +43,7 @@ struct glstate_s {
+     glbuffer_t          *defaultvbo; 
+     glvao_t             *defaultvao;
+     GLfloat             vavalue[MAX_VATTRIB][4];    // the "static" value of a VA
++    GLenum              fog_hint;                   // GL_FOG_HINT, chooses per-vertex or per-pixel fog on ES2
+     GLfloat             *vertex;                    // shortcut to actual vavalue...
+     GLfloat             *color;
+     GLfloat             *secondary;
+diff --git a/src/gl/hint.c b/src/gl/hint.c
+index 655d54db..8c63a5b1 100644
+--- a/src/gl/hint.c
++++ b/src/gl/hint.c
+@@ -19,8 +19,10 @@ void APIENTRY_GL4ES gl4es_glHint(GLenum pname, GLenum mode) {
+     switch(pname) {
+         // some Hint are not supported in GLES2, so just ignoring them
+         case GL_FOG_HINT:
+-            if(hardext.esversion>1)
++            if(hardext.esversion>1) {
++                glstate->fog_hint = mode;
+                 return;
++            }
+             gles_glHint(pname, mode);
+             break;
+         case GL_PERSPECTIVE_CORRECTION_HINT:
+diff --git a/src/gl/init.c b/src/gl/init.c
+index 7526d913..e2d36b12 100644
+--- a/src/gl/init.c
++++ b/src/gl/init.c
+@@ -278,6 +278,14 @@ void initialize_gl4es() {
+     env(LIBGL_RECYCLEFBO, globals4es.recyclefbo, "Recycling of FBO enabled");
+ 
+     // Texture hacks
++    globals4es.vertexfog = IsEnvVarTrue("LIBGL_VERTEXFOG");
++    // Off by default: on PowerVR SGX545 (DDK 1.7) the plain texture2D lookups it
++    // produces lock the GPU up repeatedly, though they are cheaper elsewhere.
++    globals4es.tex2dnoproj = IsEnvVarTrue("LIBGL_TEX2DNOPROJ");
++    if(globals4es.tex2dnoproj)
++        SHUT_LOGD("2D textures with texcoord q known to be 1 sampled without projection\n");
++    if(globals4es.vertexfog)
++        SHUT_LOGD("Fog computed per vertex unless GL_FOG_HINT is GL_NICEST\n");
+     globals4es.automipmap=ReturnEnvVarInt("LIBGL_MIPMAP");
+     switch(globals4es.automipmap) {
+       case 1:
+diff --git a/src/gl/init.h b/src/gl/init.h
+index feffa5df..8bd07706 100644
+--- a/src/gl/init.h
++++ b/src/gl/init.h
+@@ -18,6 +18,8 @@ typedef struct _globals4es {
+  int showfps;
+  int vsync;
+  int automipmap;
++ int vertexfog;
++ int tex2dnoproj;
+  int texcopydata;
+  int tested_env;
+  int texshrink;
+diff --git a/src/gl/list.h b/src/gl/list.h
+index ae299124..e9751a9b 100644
+--- a/src/gl/list.h
++++ b/src/gl/list.h
+@@ -204,6 +204,7 @@ typedef struct _renderlist_t {
+     int      secondary_stride;
+     int      fogcoord_stride;
+     int      tex_stride[MAX_TEX];
++    int      tex_q1[MAX_TEX];   // texcoords' q all 1? 0=not evaluated, 1=yes, 2=no
+     GLuint   vbo_array;
+     GLuint   vbo_indices;
+     int      use_vbo_array;   // 0=Not evaluated, 1=No, 2=Yes
+diff --git a/src/gl/listdraw.c b/src/gl/listdraw.c
+index faaf6866..56104aa8 100644
+--- a/src/gl/listdraw.c
++++ b/src/gl/listdraw.c
+@@ -577,6 +577,20 @@ static void line_arrays_vbo_view(renderlist_t *view,
+     }
+ }
+ 
++// Are all of list's texcoord q for unit a equal to 1? Evaluated once: a list does not
++// change once it is drawn.
++static int list_tex_q_is_one(renderlist_t *list, int a) {
++    if (!list->tex_q1[a]) {
++        const int stride = list->tex_stride[a] ? list->tex_stride[a]>>2 : 4;
++        const GLfloat *q = list->tex[a]+3;
++        int one = 1;
++        for (int i=0; i<list->len && one; i++, q+=stride)
++            one = (*q==1.0f);
++        list->tex_q1[a] = one?1:2;
++    }
++    return list->tex_q1[a]==1;
++}
++
+ void draw_renderlist(renderlist_t *list) {
+     if (!list) return;
+     // go to 1st...
+@@ -975,9 +989,16 @@ void draw_renderlist(renderlist_t *list) {
+                 if(draw_tex) {
+                     TEXTURE(a);
+                     fpe_glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+-                    gles_glTexCoordPointer(4, GL_FLOAT,
+-                                           use_line_arrays ? 0 : list->tex_stride[a],
+-                                           draw_tex);
++                    // A list stores 4 components; when every q is 1, say so by giving 3,
++                    // so a 2D texture can be sampled without projection (fpe texnoproj).
++                    if (use_line_arrays)
++                        gles_glTexCoordPointer(4, GL_FLOAT, 0, draw_tex);
++                    else if (list_tex_q_is_one(list, a))
++                        gles_glTexCoordPointer(3, GL_FLOAT,
++                                               list->tex_stride[a] ? list->tex_stride[a] : 4*sizeof(GLfloat),
++                                               draw_tex);
++                    else
++                        gles_glTexCoordPointer(4, GL_FLOAT, list->tex_stride[a], draw_tex);
+                 } else {
+                     TEXTURE(a);
+                     fpe_glDisableClientState(GL_TEXTURE_COORD_ARRAY);

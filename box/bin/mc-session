@@ -34,11 +34,35 @@ ddk_sync() {
 		# libIMGegl loads the window system by this fixed name; point it at
 		# the framebuffer backend whatever the sysroot did.
 		ln -sf libpvrPVR2D_LINUXFBWSEGL.so.1.7.862890 "$R/usr/lib/sgx/libpvrPVR2D_DRIWSEGL.so"
-		[ -r /etc/powervr.ini ] && cp /etc/powervr.ini "$R/etc/powervr.ini"
+		{ [ -r /etc/powervr.ini ] && cat /etc/powervr.ini; game_hints; } > "$R/etc/powervr.ini"
 		return 0
 	done
 	log "no SGX545 DDK on this box (/opt/sgx-i386*) — not an openHC EA image?"
 	return 1
+}
+
+# DDK hints for the game's process (the DDK reads the section named after the
+# executable). Measured on an EA1 in a world, each against the one before:
+#   OverloadTexLayout=1  linear textures: a glTexSubImage2D into a swizzled texture
+#                        reads the whole texture back from GPU memory and writes it
+#                        again, and the game animates its block atlas every tick
+#                        (gl4es is told no mipmaps, which linear textures cannot have)
+#   DisableHWTextureUpload=1  copy those small updates with the CPU; the GPU path
+#                        waits for the texture to be idle first
+#   *BufferSize          room for a frame's geometry and control streams, so a draw
+#                        does not wait for the GPU to drain them mid-frame
+game_hints() {
+	cat <<-EOF
+
+	[java]
+	OverloadTexLayout=1
+	DisableHWTextureUpload=1
+	DefaultVertexBufferSize=2097152
+	MaxVertexBufferSize=4194304
+	DefaultIndexBufferSize=1048576
+	DefaultPDSVertBufferSize=262144
+	DefaultVDMBufferSize=131072
+	EOF
 }
 
 mounts() {

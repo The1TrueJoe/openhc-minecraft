@@ -1,0 +1,85 @@
+From: openhc-minecraft
+Subject: [PATCH] FPE: draw line strips and loops as indexed lines on PowerVR
+
+PowerVR SGX (DDK 1.7) draws GL_LINE_STRIP and GL_LINE_LOOP from glDrawArrays
+with stray segments running to the middle of the screen -- Minecraft's block
+selection outline grew lines to the crosshair. The same vertices drawn as
+indexed GL_LINES are right, so fpe_glDrawArrays does that: on by default for
+Imagination GPUs, LIBGL_NOLINESTRIP=1/0 to force it either way.
+
+---
+diff --git a/src/gl/fpe.c b/src/gl/fpe.c
+index 8def62ed..c127977f 100644
+--- a/src/gl/fpe.c
++++ b/src/gl/fpe.c
+@@ -818,12 +818,45 @@ void APIENTRY_GL4ES fpe_glNormal3f(GLfloat nx, GLfloat ny, GLfloat nz) {
+     noerrorShim();
+ }
+ 
++// PowerVR SGX (DDK 1.7) draws GL_LINE_STRIP and GL_LINE_LOOP from glDrawArrays with
++// stray segments running to the middle of the screen; the same vertices drawn as
++// indexed GL_LINES come out right. LIBGL_NOLINESTRIP=1/0 forces it on/off elsewhere.
++static int fpe_draw_strip_as_lines(GLenum mode, GLint first, GLsizei count) {
++    int on = globals4es.nolinestrip;
++    if(on<0)
++        on = (hardext.vendor==VEND_IMGTEC);
++    if(!on || (mode!=GL_LINE_STRIP && mode!=GL_LINE_LOOP) || count<2 || first+count>65536)
++        return 0;
++    const int segs = count-1+(mode==GL_LINE_LOOP);
++    GLushort local[256];
++    GLushort *idx = (segs*2<=256)?local:(GLushort*)malloc(segs*2*sizeof(GLushort));
++    if(!idx)
++        return 0;
++    for(int i=0; i<count-1; i++) {
++        idx[i*2] = first+i;
++        idx[i*2+1] = first+i+1;
++    }
++    if(mode==GL_LINE_LOOP) {
++        idx[(count-1)*2] = first+count-1;
++        idx[(count-1)*2+1] = first;
++    }
++    LOAD_GLES(glDrawElements);
++    GLuint old_buffer = wantBufferIndex(0);   // the indices are on the client side
++    realize_bufferIndex();
++    gles_glDrawElements(GL_LINES, segs*2, GL_UNSIGNED_SHORT, idx);
++    wantBufferIndex(old_buffer);
++    if(idx!=local)
++        free(idx);
++    return 1;
++}
++
+ void APIENTRY_GL4ES fpe_glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+     DBG(printf("fpe_glDrawArrays(%s, %d, %d), program=%d, instanceID=%u\n", PrintEnum(mode), first, count, glstate->glsl->program, glstate->instanceID);)
+     scratch_t scratch = {0};
+     realize_glenv(mode==GL_POINTS, first, count, 0, NULL, &scratch);
+     LOAD_GLES(glDrawArrays);
+-    gles_glDrawArrays(mode, first, count);
++    if(!fpe_draw_strip_as_lines(mode, first, count))
++        gles_glDrawArrays(mode, first, count);
+     free_scratch(&scratch);
+ }
+ 
+diff --git a/src/gl/init.c b/src/gl/init.c
+index e2d36b12..c35be91c 100644
+--- a/src/gl/init.c
++++ b/src/gl/init.c
+@@ -278,6 +278,7 @@ void initialize_gl4es() {
+     env(LIBGL_RECYCLEFBO, globals4es.recyclefbo, "Recycling of FBO enabled");
+ 
+     // Texture hacks
++    globals4es.nolinestrip = ReturnEnvVarIntDef("LIBGL_NOLINESTRIP", -1);   // -1: on for PowerVR
+     globals4es.vertexfog = IsEnvVarTrue("LIBGL_VERTEXFOG");
+     // Off by default: on PowerVR SGX545 (DDK 1.7) the plain texture2D lookups it
+     // produces lock the GPU up repeatedly, though they are cheaper elsewhere.
+diff --git a/src/gl/init.h b/src/gl/init.h
+index 8bd07706..87220b7a 100644
+--- a/src/gl/init.h
++++ b/src/gl/init.h
+@@ -20,6 +20,7 @@ typedef struct _globals4es {
+  int automipmap;
+  int vertexfog;
+  int tex2dnoproj;
++ int nolinestrip;
+  int texcopydata;
+  int tested_env;
+  int texshrink;
