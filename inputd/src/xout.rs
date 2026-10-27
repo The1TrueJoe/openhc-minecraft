@@ -61,6 +61,12 @@ impl X {
         self.conn.flush().is_ok()
     }
 
+    /// Where the pointer is now, in screen pixels (the game warps it, too).
+    pub fn pointer(&self) -> Option<(i16, i16)> {
+        let r = self.conn.query_pointer(self.root).ok()?.reply().ok()?;
+        Some((r.root_x, r.root_y))
+    }
+
     /// True while some client (LWJGL, when the game captures the mouse) holds
     /// the pointer. We find out by trying to grab it ourselves and letting go
     /// at once; a GUI screen has released it, so ours succeeds there.

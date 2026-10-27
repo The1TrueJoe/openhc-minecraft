@@ -17,6 +17,8 @@ EA only for now (EA-1/EA-3: Atom CE5310, PowerVR SGX545).
  Minecraft 1.7.10 on a 32-bit Java 8 ─────────────┘
         │  OpenGL 2.1
         ▼
+ mc-overlay (pointer + on-screen keyboard, from mc-inputd's /tmp/mc-ui)
+        ▼
  gl4es (GL → GLES2, framebuffer mode) → PowerVR DDK 1.7 GLES2/EGL (LinuxFB WSEGL)
         ▼
  sgx545ce kernel driver (32-on-64 bridge compat) → SGX545 → /dev/fb0 → HDMI
@@ -70,23 +72,33 @@ The game runs in offline mode. Singleplayer works, and so do servers with
 
 | | In the world | In menus / inventory |
 |---|---|---|
-| Left stick | move (W A S D) | cursor |
-| Right stick | look | cursor |
+| Left stick | move (W A S D) | pointer |
+| Right stick | look | pointer |
+| D-pad | ←/→ hotbar, ↑ player list (hold), ↓ drop item | pointer, one inventory slot per press |
 | RT / LT | attack-mine / use-place | left / right click |
 | A | jump | click |
 | B | sneak (hold) | back (Esc) |
 | X | drop item | right click |
 | Y | inventory | close inventory |
-| LB / RB, D-pad ←/→ | hotbar | scroll |
+| LB / RB | hotbar | scroll |
 | L3 | sprint (hold) | shift (shift-click with A) |
-| R3, D-pad ↑ | camera (F5) | |
+| R3 | camera (F5) | |
 | Start / Guide | pause (Esc) | back |
-| Back | player list (Tab) | |
+| Back | chat, with the on-screen keyboard | on-screen keyboard |
+
+The panel shows no X cursor (the picture never goes through X), so the overlay
+draws the pointer whenever a menu is up, for a mouse as well as a pad.
+
+**On-screen keyboard.** Back opens it — over a menu's text field, or with chat
+from the world, where it sits at the top of the screen, clear of the chat line.
+D-pad or left stick picks a key, A types it, X deletes, Y shifts, LB/RB move the
+text cursor, Start is Enter (and closes it), B or Back closes it.
 
 mc-inputd tells the world from a menu by whether the game holds the X pointer
-grab. Tuning: `MC_PAD_LOOK`, `MC_PAD_CURSOR`, `MC_PAD_DEADZONE`. Use
-`MC_INPUT_IGNORE` to leave devices alone; the front IR receiver is ignored by
-default.
+grab. Tuning: `MC_PAD_LOOK`, `MC_PAD_CURSOR`, `MC_PAD_DEADZONE`, and
+`MC_GUI_SCALE` if the game's GUI scale is not "auto" (the D-pad steps a slot at
+that scale). Use `MC_INPUT_IGNORE` to leave devices alone; the front IR receiver
+is ignored by default.
 
 ## Layout
 
@@ -94,7 +106,7 @@ default.
 |---|---|
 | `inputd/` | `mc-inputd` (evdev → XTest) and `mc-fetch` (HTTPS for the box), Rust, static musl |
 | `box/` | what goes on the box: `mc-session`, `mc-install`, `S96minecraft` |
-| `runtime/` | builds `runtime-i386.tar.xz`: Debian i386 + Xvfb + gl4es (+ patch) + Zulu 8 i686 + launchers |
+| `runtime/` | builds `runtime-i386.tar.xz`: Debian i386 + Xvfb + gl4es (+ patches) + the overlay + Zulu 8 i686 + launchers |
 | `.github/workflows/build.yml` | builds both artifacts; attaches them to a release |
 
 ## Build
