@@ -1,18 +1,18 @@
-From 3157ea0dc0b93c50d599c7c2e027831fb958d612 Mon Sep 17 00:00:00 2001
+From afd1afa534119041bb092b6fc28493a8f9ed77e8 Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <jttelaak@hotmail.com>
 Date: Wed, 28 Oct 2026 02:32:26 -0400
 Subject: [PATCH] src/gl: Accept GL_TEXTURE_MAX_ANISOTROPY as a no-op without
  anisotropic filtering
 
 ---
- src/gl/texture_params.c | 12 +++++++-----
- 1 file changed, 7 insertions(+), 5 deletions(-)
+ src/gl/texture_params.c | 14 +++++---------
+ 1 file changed, 5 insertions(+), 9 deletions(-)
 
 diff --git a/src/gl/texture_params.c b/src/gl/texture_params.c
-index 96e07205..3790b19e 100644
+index 96e07205..0f5d4df4 100644
 --- a/src/gl/texture_params.c
 +++ b/src/gl/texture_params.c
-@@ -329,14 +329,16 @@ void APIENTRY_GL4ES gl4es_glTexParameterfv(GLenum target, GLenum pname, const GL
+@@ -329,14 +329,12 @@ void APIENTRY_GL4ES gl4es_glTexParameterfv(GLenum target, GLenum pname, const GL
                  }
                  break;  // fallback to calling actual glTexParameteri
              case GL_TEXTURE_MAX_ANISOTROPY:
@@ -20,28 +20,29 @@ index 96e07205..3790b19e 100644
 -                    errorShim(GL_INVALID_ENUM);
 -                    return;
 -                }
-                 if(param<0){
+-                if(param<0){
++                if(params[0]<1.0f){
                      errorShim(GL_INVALID_VALUE);
                      return;
                  }
-+                if(!hardext.aniso) {
-+                    // Not advertised, but some programs (Minecraft 1.7.10) set it unconditionally
-+                    // when they draw: accept it as a no-op instead of an error every frame.
-+                    noerrorShim();
-+                    return;
-+                }
++                if(!hardext.aniso)
++                    return; // not advertised, but some programs (Minecraft 1.7.10) set it anyway
                  if(param>hardext.aniso) param=hardext.aniso;
                  texture->aniso = param;
                  break;
-@@ -580,7 +582,7 @@ void APIENTRY_GL4ES gl4es_glGetTexLevelParameterfv(GLenum target, GLint level, G
+@@ -579,10 +577,8 @@ void APIENTRY_GL4ES gl4es_glGetTexLevelParameterfv(GLenum target, GLint level, G
+                 (*params) = (bound->orig_internal==GL_LUMINANCE || bound->orig_internal==GL_LUMINANCE_ALPHA)?8:0;
                  break;
              case GL_TEXTURE_MAX_ANISOTROPY:
-                 if(!hardext.aniso)
+-                if(!hardext.aniso)
 -                    errorShim(GL_INVALID_ENUM);
-+                    (*params) = 1.0f;   // no anisotropic filtering, see glTexParameterfv
-                 else
-                     (*params) = bound->aniso;
+-                else
+-                    (*params) = bound->aniso;
++                // 1.0 is the GL default, and all we do without anisotropic filtering
++                (*params) = (hardext.aniso && bound->aniso)?bound->aniso:1.0f;
                  break;
+             case GL_TEXTURE_MAX_LEVEL:
+                 if(!bound->valid || bound->max_level==-1)
 -- 
 2.50.1 (Apple Git-155)
 
