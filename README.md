@@ -73,6 +73,23 @@ of 3 chunks. The GPU's frame rate follows how much world it draws: on an EA1,
 2 chunks run at about 54 FPS, 3 at about 42 and 4 at about 29. Change it in
 Options → Video Settings; the game keeps what you pick.
 
+## OptiFine (recommended)
+
+OptiFine makes the game noticeably faster here. In the same overworld view on an
+EA1, vanilla runs about 39 FPS at 3 chunks; OptiFine runs about 55 at 3 chunks and
+47 at 4. Its licence doesn't allow bundling it, so the box fetches it from
+optifine.net itself (or you pass it the installer jar you downloaded):
+
+```bash
+ssh root@<box> /opt/minecraft/bin/mc-optifine install
+```
+
+It checks the jar's hash, gets Mojang's launchwrapper, patches the game jar, and
+seeds `optionsof.txt` with a profile tuned for this box: 4 chunks, no animated
+terrain textures, fast leaves/grass/rain, no clouds. After that, settings you
+change in Video Settings stick. `mc-optifine off` and `mc-optifine on` switch it
+for the next start.
+
 ## Controller layout (Xbox)
 
 | | In the world | In menus / inventory |

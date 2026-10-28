@@ -1,0 +1,115 @@
+#!/bin/sh
+# mc-optifine install [JAR] | on | off — add OptiFine to the game.
+#
+# OptiFine's licence does not allow passing it on, so this repo ships none: it
+# is fetched from optifine.net on the box (or give the installer JAR you
+# downloaded yourself). Its installer patches the game's own jar into a mod jar;
+# Patcher does that step here without a GUI. The launcher (runtime/bin/minecraft)
+# then starts the game through Mojang's launchwrapper with OptiFine's tweaker
+# whenever the mod jar is there and optifine/off is not.
+#
+# Measured on an EA1 in the same overworld view: at 3 chunks vanilla ~39 FPS,
+# OptiFine with the profile below ~55; OptiFine at 4 chunks ~47, at 5 ~40. In the
+# End (one dragon) both run ~40-45 at 3-4 chunks.
+set -e
+M=/opt/minecraft
+R=$M/rootfs
+G=$R/opt/minecraft
+OF=OptiFine_1.7.10_HD_U_E7
+OF_SHA256=8bcd9d83de001a0591f498105f369f070c47d2c9192774d5a5b69f646e44fab4
+LW=$G/libraries/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar
+LW_URL=https://libraries.minecraft.net/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar
+LW_SHA1=111e7bea9c968cdb3d06ef4632bf7ff0824d0f36
+
+log() { echo "mc-optifine: $*"; }
+die() { log "$*"; exit 1; }
+
+# A profile for this box: 4 chunks (~47 FPS, more than vanilla gets at 3); no
+# animated terrain textures (each animation frame makes the GPU driver copy the
+# whole block atlas); fast leaves, grass, rain and translucency; no clouds, stars
+# or vignette; chunk loading on a second core.
+profile() {
+	cat <<-EOF
+	ofRenderDistanceChunks:4
+	ofFogType:1
+	ofClouds:3
+	ofTrees:1
+	ofGrass:1
+	ofDroppedItems:1
+	ofRain:1
+	ofAnimatedWater:2
+	ofAnimatedLava:2
+	ofAnimatedFire:2
+	ofAnimatedPortal:2
+	ofAnimatedRedstone:false
+	ofAnimatedTerrain:false
+	ofAnimatedTextures:false
+	ofAnimatedItems:false
+	ofVoidParticles:false
+	ofWaterParticles:false
+	ofRainSplash:false
+	ofPortalParticles:false
+	ofDrippingWaterLava:false
+	ofBetterGrass:3
+	ofConnectedTextures:3
+	ofStars:false
+	ofVignette:1
+	ofChunkLoading:2
+	ofSmoothBiomes:false
+	ofCustomSky:false
+	ofRandomMobs:false
+	ofNaturalTextures:false
+	ofLazyChunkLoading:true
+	ofDynamicLights:3
+	ofFastMath:true
+	ofFastRender:true
+	ofTranslucentBlocks:1
+	EOF
+}
+
+install_of() {
+	[ -f "$G/versions/1.7.10/1.7.10.jar" ] || die "install the game first (mc-install)"
+	mkdir -p "$G/optifine"
+	jar=$G/optifine/$OF.jar
+	if [ -n "$1" ]; then
+		cp "$1" "$jar"
+	elif ! [ -f "$jar" ]; then
+		log "fetching $OF from optifine.net"
+		"$M/bin/mc-fetch" "https://optifine.net/adloadx?f=$OF.jar" /tmp/optifine.html
+		link=$(grep -o "downloadx?f=$OF.jar&x=[0-9a-f]*" /tmp/optifine.html | head -n 1)
+		rm -f /tmp/optifine.html
+		[ -n "$link" ] || die "no download link on optifine.net's page; download $OF.jar yourself and run: mc-optifine install <jar>"
+		"$M/bin/mc-fetch" "https://optifine.net/$link" "$jar"
+	fi
+	[ "$(sha256sum "$jar" | cut -d' ' -f1)" = $OF_SHA256 ] || { rm -f "$jar"; die "$OF.jar is not the expected file"; }
+
+	if ! [ -f "$LW" ] || [ "$(sha1sum "$LW" | cut -d' ' -f1)" != $LW_SHA1 ]; then
+		log "fetching launchwrapper 1.12 from Mojang"
+		mkdir -p "$(dirname "$LW")"
+		"$M/bin/mc-fetch" "$LW_URL" "$LW"
+		[ "$(sha1sum "$LW" | cut -d' ' -f1)" = $LW_SHA1 ] || { rm -f "$LW"; die "launchwrapper checksum mismatch"; }
+	fi
+
+	log "patching the game jar"
+	mountpoint -q "$R/proc" || mount -t proc proc "$R/proc"
+	chroot "$R" /usr/bin/env -i HOME=/root PATH=/usr/bin:/bin sh -c \
+		"cd /opt/minecraft && /opt/java/jre8/bin/java -cp optifine/$OF.jar optifine.Patcher \
+		 versions/1.7.10/1.7.10.jar optifine/$OF.jar optifine/${OF}_MOD.jar" >/dev/null
+	[ -s "$G/optifine/${OF}_MOD.jar" ] || die "patching failed"
+
+	# OptiFine keeps its own settings beside options.txt; seed them once, then the
+	# game owns them (changes made in Video Settings stick).
+	if ! [ -f "$G/optionsof.txt" ]; then
+		profile > "$G/optionsof.txt"
+		[ -f "$G/options.txt" ] && sed -i 's/^renderDistance:.*/renderDistance:4/' "$G/options.txt"
+	fi
+	rm -f "$G/optifine/off"
+	log "done — OptiFine starts with the game (mc-optifine off to go back to vanilla)"
+}
+
+case "$1" in
+	install) shift; install_of "$@" ;;
+	off) mkdir -p "$G/optifine" && touch "$G/optifine/off" && log "off from the next start" ;;
+	on) rm -f "$G/optifine/off"; log "on from the next start" ;;
+	*) echo "usage: mc-optifine install [JAR] | on | off" >&2; exit 2 ;;
+esac
