@@ -1,0 +1,335 @@
+From d45b3ffab53058ac4a5bf473c8b93b8fcd23408c Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <jttelaak@hotmail.com>
+Date: Tue, 27 Oct 2026 22:38:42 -0400
+Subject: [PATCH 2/3] src/gl: Add LIBGL_VERTEXFOG for per-vertex fixed-pipeline
+ fog
+
+---
+ USAGE.md            |   5 ++
+ src/gl/fpe.c        |   4 +
+ src/gl/fpe.h        |   1 +
+ src/gl/fpe_cache.c  |   2 +-
+ src/gl/fpe_shader.c | 173 ++++++++++++++++++++++----------------------
+ src/gl/init.c       |   1 +
+ src/gl/init.h       |   1 +
+ 7 files changed, 101 insertions(+), 86 deletions(-)
+
+diff --git a/USAGE.md b/USAGE.md
+index 8307a9ca..12945b8d 100644
+--- a/USAGE.md
++++ b/USAGE.md
+@@ -376,6 +376,11 @@ Force normals to be normliazed in FPE
+ * 0 : Default, don't force normalizations
+ * 1 : Force normalization on normals on FPE, even when it's disabled (workaround for a bug that prevent colors on Minecraft 1.16+)
+ 
++##### LIBGL_VERTEXFOG
++Fog computed per vertex instead of per pixel, for the fixed pipeline (GLES2 backend only)
++ * 0 : Default, fog is computed per pixel
++ * 1 : Fog is computed per vertex and interpolated, unless the application sets GL_FOG_HINT to GL_NICEST. Faster on fill-rate-limited GPUs, less accurate on large polygons
++
+ ###### LIBGL_BLITFB0
+ Blit to FB 0 force a SwapBuffer
+ * 0 : Default, don't force a SwapBuffer when glBlitFramebuffer to draw fb0 is used (unless the full FB0 if blitted)
+diff --git a/src/gl/fpe.c b/src/gl/fpe.c
+index c21bcf1f..8be24faf 100644
+--- a/src/gl/fpe.c
++++ b/src/gl/fpe.c
+@@ -135,6 +135,7 @@ void APIENTRY_GL4ES fpe_ReleventState_DefaultVertex(fpe_state_t *dest, fpe_state
+         dest->fogsource = 0;
+         dest->fogdist = 0;
+     }
++    dest->fogvertex = 0;
+     if(!dest->point) {
+         dest->pointsprite = 0;
+         dest->point_smooth = 0;
+@@ -244,6 +245,8 @@ void APIENTRY_GL4ES fpe_ReleventState(fpe_state_t *dest, fpe_state_t *src, int f
+         dest->fogsource = 0;
+         dest->fogdist = 0;
+     }
++    if(!fixed || !dest->fog || dest->vertex_prg_enable || dest->fragment_prg_enable)
++        dest->fogvertex = 0;
+     if(!fixed || !dest->point) {
+         dest->pointsprite = 0;
+         dest->point_smooth = 0;
+@@ -385,6 +388,7 @@ void APIENTRY_GL4ES fpe_oldprogram(fpe_state_t* state) {
+ // ********* Shader stuffs handling *********
+ void APIENTRY_GL4ES fpe_program(int ispoint) {
+     glstate->fpe_state->point = ispoint;
++    glstate->fpe_state->fogvertex = globals4es.vertexfog && glstate->fog_hint!=GL_NICEST;
+     fpe_state_t state;
+     fpe_ReleventState(&state, glstate->fpe_state, 1);
+     if(glstate->fpe==NULL || memcmp(&glstate->fpe->state, &state, sizeof(fpe_state_t))) {
+diff --git a/src/gl/fpe.h b/src/gl/fpe.h
+index 4c51179f..7aff1be0 100644
+--- a/src/gl/fpe.h
++++ b/src/gl/fpe.h
+@@ -188,6 +188,7 @@ typedef struct fpe_state_s {
+     unsigned int fogdist:2;              // fog distance mode
+     unsigned int fogsource:1;            // fog source
+     unsigned int fog:1;                  // Fog enabled or not
++    unsigned int fogvertex:1;            // Fog computed per vertex (LIBGL_VERTEXFOG)
+     unsigned int colorsum:1;             // secondary color enabled
+     unsigned int lighting:1;             // global lighting enabled
+     unsigned int normalize:1;            // normalization
+diff --git a/src/gl/fpe_cache.c b/src/gl/fpe_cache.c
+index 4f16639e..7e3f5603 100644
+--- a/src/gl/fpe_cache.c
++++ b/src/gl/fpe_cache.c
+@@ -31,7 +31,7 @@
+ #endif
+ 
+ static const char PSA_SIGN[] = "GL4ES PrecompiledShaderArchive";
+-#define CACHE_VERSION 112
++#define CACHE_VERSION 113
+ 
+ static kh_inline khint_t _hash_fpe(fpe_state_t *p)
+ {
+diff --git a/src/gl/fpe_shader.c b/src/gl/fpe_shader.c
+index dbe87a7c..7b22ef72 100644
+--- a/src/gl/fpe_shader.c
++++ b/src/gl/fpe_shader.c
+@@ -171,6 +171,7 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
+     int fogsource = state->fogsource;
+     int fogdist = state->fogdist;
+     int fogmode = state->fogmode;
++    int fogvertex = fog && !is_default && state->fogvertex;
+     int color_material = state->color_material && lighting;
+     int color_material_front = color_material && state->cm_front_active;
+     int color_material_back = color_material && state->cm_back_active;
+@@ -328,25 +329,25 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
+         }
+     }
+     if(fog) {
+-        #if 0   // vertex fog
+-        ShadAppend("varying mediump float FogF;\n");
+-        headers++;
+-        if(fogsource==FPE_FOG_SRC_DEPTH && need_vertex<1)
+-            need_vertex = 1;
+-        #else   // pixel fog
+-        if(fogsource==FPE_FOG_SRC_COORD)
+-            sprintf(buff, "varying %s float FogSrc;\n", fogp);
+-        else {
+-            if(need_vertex<1)
++        if(fogvertex) {
++            ShadAppend("varying mediump float FogF;\n");
++            headers++;
++            if(fogsource==FPE_FOG_SRC_DEPTH && need_vertex<1)
+                 need_vertex = 1;
+-            switch(fogdist) {
+-                case FPE_FOG_DIST_RADIAL: sprintf(buff, "varying %s vec3 FogSrc;\n", fogp); break;
+-                case FPE_FOG_DIST_PLANE: sprintf(buff, "varying %s float FogSrc;\n", fogp); break;
+-                default: sprintf(buff, "varying %s float FogSrc;\n", fogp);
++        } else {
++            if(fogsource==FPE_FOG_SRC_COORD)
++                sprintf(buff, "varying %s float FogSrc;\n", fogp);
++            else {
++                if(need_vertex<1)
++                    need_vertex = 1;
++                switch(fogdist) {
++                    case FPE_FOG_DIST_RADIAL: sprintf(buff, "varying %s vec3 FogSrc;\n", fogp); break;
++                    case FPE_FOG_DIST_PLANE: sprintf(buff, "varying %s float FogSrc;\n", fogp); break;
++                    default: sprintf(buff, "varying %s float FogSrc;\n", fogp);
++                }
+             }
++            ShadAppend(buff);
+         }
+-        ShadAppend(buff);
+-        #endif
+     }
+     // textures coordinates
+     for (int i=0; i<hardext.maxtex; i++) {
+@@ -772,38 +773,39 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
+             sprintf(buff, "// Fog On: mode=%X, source=%X distance=%X\n", fogmode, fogsource, fogdist);
+             ShadAppend(buff);
+         }
+-        #if 0    // vertex fog
+-        char fogsrc[50];
+-        if(fogsource==FPE_FOG_SRC_COORD)
+-            strcpy(fogsrc, "gl_FogCoord");
+-        else switch(fogdist) {
+-            case FPE_FOG_DIST_RADIAL: strcpy(fogsrc, "length(vertex.xyz)"); break;
+-            case FPE_FOG_DIST_PLANE: strcpy(fogsrc, "vertex.z"); break;
+-            default: strcpy(fogsrc, "abs(vertex.z)");
+-        }
+-        sprintf(buff, "float fog_c = %s;\n", fogsrc);
+-        ShadAppend(buff);
+-        switch(fogmode) {
+-            case FPE_FOG_EXP:
+-                ShadAppend("FogF = clamp(exp(-gl_Fog.density * fog_c), 0., 1.);\n");
+-                break;
+-            case FPE_FOG_EXP2:
+-                ShadAppend("FogF = clamp(exp(-(gl_Fog.density * fog_c)*(gl_Fog.density * fog_c)), 0., 1.);\n");
+-                break;
+-            case FPE_FOG_LINEAR:
+-                ShadAppend("FogF = clamp((gl_Fog.end - fog_c) * gl_Fog.scale, 0., 1.);\n");
+-                break;
+-        }
+-        #else   // pixel fog
+-        if(fogsource==FPE_FOG_SRC_COORD)
+-            sprintf(buff, "FogSrc = gl_FogCoord;\n");
+-        else switch(fogdist) {
+-            case FPE_FOG_DIST_RADIAL: sprintf(buff, "FogSrc = vertex.xyz;\n"); break;
+-            case FPE_FOG_DIST_PLANE:
+-            default: sprintf(buff, "FogSrc = vertex.z;\n");
++        if(fogvertex) {
++            char fogsrc[50];
++            if(fogsource==FPE_FOG_SRC_COORD)
++                strcpy(fogsrc, "gl_FogCoord");
++            else switch(fogdist) {
++                case FPE_FOG_DIST_RADIAL: strcpy(fogsrc, "length(vertex.xyz)"); break;
++                case FPE_FOG_DIST_PLANE: strcpy(fogsrc, "vertex.z"); break;
++                default: strcpy(fogsrc, "abs(vertex.z)");
++            }
++            sprintf(buff, "float fog_c = %s;\n", fogsrc);
++            ShadAppend(buff);
++            switch(fogmode) {
++                case FPE_FOG_EXP:
++                    ShadAppend("FogF = clamp(exp(-gl_Fog.density * fog_c), 0., 1.);\n");
++                    break;
++                case FPE_FOG_EXP2:
++                    ShadAppend("FogF = clamp(exp(-(gl_Fog.density * fog_c)*(gl_Fog.density * fog_c)), 0., 1.);\n");
++                    break;
++                case FPE_FOG_LINEAR:
++                    sprintf(buff, "FogF = clamp((gl_Fog.end - fog_c) %s, 0., 1.);\n", hardext.highp?"* gl_Fog.scale":"/ (gl_Fog.end - gl_Fog.start)");
++                    ShadAppend(buff);
++                    break;
++            }
++        } else {
++            if(fogsource==FPE_FOG_SRC_COORD)
++                sprintf(buff, "FogSrc = gl_FogCoord;\n");
++            else switch(fogdist) {
++                case FPE_FOG_DIST_RADIAL: sprintf(buff, "FogSrc = vertex.xyz;\n"); break;
++                case FPE_FOG_DIST_PLANE:
++                default: sprintf(buff, "FogSrc = vertex.z;\n");
++            }
++            ShadAppend(buff);
+         }
+-        ShadAppend(buff);
+-        #endif
+     }
+         
+ 
+@@ -832,6 +834,7 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+     int fogsource = state->fogsource;
+     int fogmode = state->fogmode;
+     int fogdist = state->fogdist;
++    int fogvertex = fog && is_default && state->fogvertex;
+     int planes = state->plane;
+     int point = state->point;
+     int point_smooth = state->point_smooth && state->point;
+@@ -884,19 +887,19 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+         }
+     }
+     if(fog) {
+-        #if 0   // vertex fog
+-        ShadAppend("varying mediump float FogF;\n");
+-        headers++;
+-        #else   // pixel fog
+-        if(fogsource==FPE_FOG_SRC_COORD) {
+-            sprintf(buff, "varying %s float FogSrc;\n", fogp);
+-        } else switch(fogdist) {
+-            case FPE_FOG_DIST_RADIAL: sprintf(buff, "varying %s vec3 FogSrc;\n", fogp); break;
+-            case FPE_FOG_DIST_PLANE: sprintf(buff, "varying %s float FogSrc;\n", fogp); break;
+-            default: sprintf(buff, "varying %s float FogSrc;\n", fogp);
++        if(fogvertex) {
++            ShadAppend("varying mediump float FogF;\n");
++            headers++;
++        } else {
++            if(fogsource==FPE_FOG_SRC_COORD) {
++                sprintf(buff, "varying %s float FogSrc;\n", fogp);
++            } else switch(fogdist) {
++                case FPE_FOG_DIST_RADIAL: sprintf(buff, "varying %s vec3 FogSrc;\n", fogp); break;
++                case FPE_FOG_DIST_PLANE: sprintf(buff, "varying %s float FogSrc;\n", fogp); break;
++                default: sprintf(buff, "varying %s float FogSrc;\n", fogp);
++            }
++            ShadAppend(buff);
+         }
+-        ShadAppend(buff);
+-        #endif
+     }
+     if(planes) {
+         //ShadAppend("varying vec4 clipvertex;\n");
+@@ -1387,33 +1390,33 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+             sprintf(buff, "// Fog On: mode=%X, source=%X\n", fogmode, fogsource);
+             ShadAppend(buff);
+         }
+-        #if 0   // vertex fog
+-        ShadAppend("fColor.rgb = mix(gl_Fog.color.rgb, fColor.rgb, FogF);\n");
+-        #else   // pixel fog
+-        char fogsrc[50];
+-        if(fogsource==FPE_FOG_SRC_COORD)
+-            strcpy(fogsrc, "FogSrc");
+-        else switch(fogdist) {
+-            case FPE_FOG_DIST_RADIAL: strcpy(fogsrc, "length(FogSrc)"); break;
+-            case FPE_FOG_DIST_PLANE: strcpy(fogsrc, "FogSrc"); break;
+-            default: strcpy(fogsrc, "abs(FogSrc)");
+-        }
+-        sprintf(buff, "%s float fog_c = %s;\n", fogp, fogsrc);
+-        ShadAppend(buff);
+-        switch(fogmode) {
+-            case FPE_FOG_EXP:
+-                sprintf(buff, "%s float FogF = clamp(exp(-gl_Fog.density * fog_c), 0., 1.);\n", fogp);
+-                break;
+-            case FPE_FOG_EXP2:
+-                sprintf(buff, "%s float FogF = clamp(exp(-(gl_Fog.density * fog_c)*(gl_Fog.density * fog_c)), 0., 1.);\n", fogp);
+-                break;
+-            case FPE_FOG_LINEAR:
+-                sprintf(buff, "%s float FogF = clamp((gl_Fog.end - fog_c) %s, 0., 1.);\n", fogp, hardext.highp?"* gl_Fog.scale":"/ (gl_Fog.end - gl_Fog.start)");
+-                break;
++        if(fogvertex) {
++            ShadAppend("fColor.rgb = mix(gl_Fog.color.rgb, fColor.rgb, FogF);\n");
++        } else {
++            char fogsrc[50];
++            if(fogsource==FPE_FOG_SRC_COORD)
++                strcpy(fogsrc, "FogSrc");
++            else switch(fogdist) {
++                case FPE_FOG_DIST_RADIAL: strcpy(fogsrc, "length(FogSrc)"); break;
++                case FPE_FOG_DIST_PLANE: strcpy(fogsrc, "FogSrc"); break;
++                default: strcpy(fogsrc, "abs(FogSrc)");
++            }
++            sprintf(buff, "%s float fog_c = %s;\n", fogp, fogsrc);
++            ShadAppend(buff);
++            switch(fogmode) {
++                case FPE_FOG_EXP:
++                    sprintf(buff, "%s float FogF = clamp(exp(-gl_Fog.density * fog_c), 0., 1.);\n", fogp);
++                    break;
++                case FPE_FOG_EXP2:
++                    sprintf(buff, "%s float FogF = clamp(exp(-(gl_Fog.density * fog_c)*(gl_Fog.density * fog_c)), 0., 1.);\n", fogp);
++                    break;
++                case FPE_FOG_LINEAR:
++                    sprintf(buff, "%s float FogF = clamp((gl_Fog.end - fog_c) %s, 0., 1.);\n", fogp, hardext.highp?"* gl_Fog.scale":"/ (gl_Fog.end - gl_Fog.start)");
++                    break;
++            }
++            ShadAppend(buff);
++            ShadAppend("fColor.rgb = mix(gl_Fog.color.rgb, fColor.rgb, FogF);\n");
+         }
+-        ShadAppend(buff);
+-        ShadAppend("fColor.rgb = mix(gl_Fog.color.rgb, fColor.rgb, FogF);\n");
+-        #endif
+     }
+     //Blend
+     if(shaderblend) {
+diff --git a/src/gl/init.c b/src/gl/init.c
+index 7526d913..847803e1 100644
+--- a/src/gl/init.c
++++ b/src/gl/init.c
+@@ -120,6 +120,7 @@ void initialize_gl4es() {
+ 
+     env(LIBGL_XREFRESH, globals4es.xrefresh, "xrefresh will be called on cleanup");
+     env(LIBGL_STACKTRACE, globals4es.stacktrace, "stacktrace will be printed on crash");
++    env(LIBGL_VERTEXFOG, globals4es.vertexfog, "Fog will be computed per vertex unless GL_FOG_HINT is GL_NICEST");
+ 
+     const int LIBGL_FB_ENV_VAR = 
+ #       ifndef LIBGL_FB
+diff --git a/src/gl/init.h b/src/gl/init.h
+index feffa5df..3fd337c8 100644
+--- a/src/gl/init.h
++++ b/src/gl/init.h
+@@ -18,6 +18,7 @@ typedef struct _globals4es {
+  int showfps;
+  int vsync;
+  int automipmap;
++ int vertexfog;
+  int texcopydata;
+  int tested_env;
+  int texshrink;
