@@ -1,0 +1,65 @@
+From 680bdec428425526bafa089fbfe08cb9199932cb Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <jttelaak@hotmail.com>
+Date: Tue, 27 Oct 2026 22:38:33 -0400
+Subject: [PATCH 1/3] src/gl: Track GL_FOG_HINT and reject invalid modes
+
+---
+ src/gl/getter.c  | 2 +-
+ src/gl/glstate.c | 1 +
+ src/gl/glstate.h | 1 +
+ src/gl/hint.c    | 5 +++++
+ 4 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/gl/getter.c b/src/gl/getter.c
+index 113a36fa..5e9fd078 100644
+--- a/src/gl/getter.c
++++ b/src/gl/getter.c
+@@ -759,7 +759,7 @@ int gl4es_commonGet(GLenum pname, GLfloat *params) {
+             break;
+         case GL_FOG_HINT:
+             if(hardext.esversion==1) return 0; // fall back to actual glGet
+-            *params=GL_DONT_CARE;
++            *params=glstate->fog_hint;
+             break;
+         case GL_TEXTURE_COMPRESSION_HINT:
+             *params=GL_DONT_CARE;
+diff --git a/src/gl/glstate.c b/src/gl/glstate.c
+index fe69266e..03931f37 100644
+--- a/src/gl/glstate.c
++++ b/src/gl/glstate.c
+@@ -287,6 +287,7 @@ void* NewGLState(void* shared_glstate, int es2only) {
+     glstate->fog.end = 1.0f;
+     glstate->fog.coord_src = GL_FRAGMENT_DEPTH;
+     glstate->fog.distance = GL_EYE_PLANE_ABSOLUTE_NV;
++    glstate->fog_hint = GL_DONT_CARE;
+     // Alpha Func
+     glstate->alphafunc = GL_ALWAYS;
+     glstate->alpharef = 0.0f;
+diff --git a/src/gl/glstate.h b/src/gl/glstate.h
+index 7362ec9c..3d19ca92 100644
+--- a/src/gl/glstate.h
++++ b/src/gl/glstate.h
+@@ -66,6 +66,7 @@ struct glstate_s {
+     int                 *shared_cnt;
+     light_state_t       light;
+     fog_t               fog;
++    GLenum              fog_hint;
+     material_state_t    material;
+     stencil_t           stencil;
+     float               planes[MAX_CLIP_PLANES][4];
+diff --git a/src/gl/hint.c b/src/gl/hint.c
+index 655d54db..fab71766 100644
+--- a/src/gl/hint.c
++++ b/src/gl/hint.c
+@@ -19,6 +19,11 @@ void APIENTRY_GL4ES gl4es_glHint(GLenum pname, GLenum mode) {
+     switch(pname) {
+         // some Hint are not supported in GLES2, so just ignoring them
+         case GL_FOG_HINT:
++            if(mode!=GL_FASTEST && mode!=GL_NICEST && mode!=GL_DONT_CARE) {
++                errorShim(GL_INVALID_ENUM);
++                return;
++            }
++            glstate->fog_hint = mode;
+             if(hardext.esversion>1)
+                 return;
+             gles_glHint(pname, mode);

@@ -1,41 +1,37 @@
-From 90898fb777fb75054163466dedb72470267771a1 Mon Sep 17 00:00:00 2001
+From d45b3ffab53058ac4a5bf473c8b93b8fcd23408c Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <jttelaak@hotmail.com>
-Date: Tue, 27 Oct 2026 21:54:34 -0400
-Subject: [PATCH 2/2] Add LIBGL_VERTEXFOG: compute fixed-pipeline fog per
- vertex unless GL_FOG_HINT is GL_NICEST; track and validate GL_FOG_HINT
+Date: Tue, 27 Oct 2026 22:38:42 -0400
+Subject: [PATCH 2/3] src/gl: Add LIBGL_VERTEXFOG for per-vertex fixed-pipeline
+ fog
 
 ---
  USAGE.md            |   5 ++
- src/gl/fpe.c        |   4 ++
+ src/gl/fpe.c        |   4 +
  src/gl/fpe.h        |   1 +
  src/gl/fpe_cache.c  |   2 +-
- src/gl/fpe_shader.c | 172 ++++++++++++++++++++++----------------------
- src/gl/getter.c     |   2 +-
- src/gl/glstate.c    |   1 +
- src/gl/glstate.h    |   1 +
- src/gl/hint.c       |   5 ++
+ src/gl/fpe_shader.c | 173 ++++++++++++++++++++++----------------------
  src/gl/init.c       |   1 +
  src/gl/init.h       |   1 +
- 11 files changed, 108 insertions(+), 87 deletions(-)
+ 7 files changed, 101 insertions(+), 86 deletions(-)
 
 diff --git a/USAGE.md b/USAGE.md
-index c67173c9..c5669fba 100644
+index 8307a9ca..12945b8d 100644
 --- a/USAGE.md
 +++ b/USAGE.md
-@@ -160,6 +160,11 @@ Hack: Activate some Fast Math in processor/co-processor
-  * 1 : On OpenPandora and CHIP, activate "RunFast" on Cortex-A8 (mode default NaN, flush-to-zero)
-      : Not implemented on other platforms (will do nothing)
+@@ -376,6 +376,11 @@ Force normals to be normliazed in FPE
+ * 0 : Default, don't force normalizations
+ * 1 : Force normalization on normals on FPE, even when it's disabled (workaround for a bug that prevent colors on Minecraft 1.16+)
  
 +##### LIBGL_VERTEXFOG
 +Fog computed per vertex instead of per pixel, for the fixed pipeline (GLES2 backend only)
 + * 0 : Default, fog is computed per pixel
 + * 1 : Fog is computed per vertex and interpolated, unless the application sets GL_FOG_HINT to GL_NICEST. Faster on fill-rate-limited GPUs, less accurate on large polygons
 +
- ##### LIBGL_SILENTSTUB
- Debug: Hide or Show the Sub / Not found message
-  * 0 : The messages for Stub or absent function are printed
+ ###### LIBGL_BLITFB0
+ Blit to FB 0 force a SwapBuffer
+ * 0 : Default, don't force a SwapBuffer when glBlitFramebuffer to draw fb0 is used (unless the full FB0 if blitted)
 diff --git a/src/gl/fpe.c b/src/gl/fpe.c
-index 98adbaf0..93a44e7c 100644
+index c21bcf1f..8be24faf 100644
 --- a/src/gl/fpe.c
 +++ b/src/gl/fpe.c
 @@ -135,6 +135,7 @@ void APIENTRY_GL4ES fpe_ReleventState_DefaultVertex(fpe_state_t *dest, fpe_state
@@ -89,7 +85,7 @@ index 4f16639e..7e3f5603 100644
  static kh_inline khint_t _hash_fpe(fpe_state_t *p)
  {
 diff --git a/src/gl/fpe_shader.c b/src/gl/fpe_shader.c
-index dbe87a7c..ff74263c 100644
+index dbe87a7c..7b22ef72 100644
 --- a/src/gl/fpe_shader.c
 +++ b/src/gl/fpe_shader.c
 @@ -171,6 +171,7 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
@@ -142,7 +138,7 @@ index dbe87a7c..ff74263c 100644
      }
      // textures coordinates
      for (int i=0; i<hardext.maxtex; i++) {
-@@ -772,38 +773,38 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
+@@ -772,38 +773,39 @@ const char* const* fpe_VertexShader(shaderconv_need_t* need, fpe_state_t *state)
              sprintf(buff, "// Fog On: mode=%X, source=%X distance=%X\n", fogmode, fogsource, fogdist);
              ShadAppend(buff);
          }
@@ -194,7 +190,8 @@ index dbe87a7c..ff74263c 100644
 +                    ShadAppend("FogF = clamp(exp(-(gl_Fog.density * fog_c)*(gl_Fog.density * fog_c)), 0., 1.);\n");
 +                    break;
 +                case FPE_FOG_LINEAR:
-+                    ShadAppend("FogF = clamp((gl_Fog.end - fog_c) * gl_Fog.scale, 0., 1.);\n");
++                    sprintf(buff, "FogF = clamp((gl_Fog.end - fog_c) %s, 0., 1.);\n", hardext.highp?"* gl_Fog.scale":"/ (gl_Fog.end - gl_Fog.start)");
++                    ShadAppend(buff);
 +                    break;
 +            }
 +        } else {
@@ -212,7 +209,7 @@ index dbe87a7c..ff74263c 100644
      }
          
  
-@@ -832,6 +833,7 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+@@ -832,6 +834,7 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
      int fogsource = state->fogsource;
      int fogmode = state->fogmode;
      int fogdist = state->fogdist;
@@ -220,7 +217,7 @@ index dbe87a7c..ff74263c 100644
      int planes = state->plane;
      int point = state->point;
      int point_smooth = state->point_smooth && state->point;
-@@ -884,19 +886,19 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+@@ -884,19 +887,19 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
          }
      }
      if(fog) {
@@ -252,7 +249,7 @@ index dbe87a7c..ff74263c 100644
      }
      if(planes) {
          //ShadAppend("varying vec4 clipvertex;\n");
-@@ -1387,33 +1389,33 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
+@@ -1387,33 +1390,33 @@ const char* const* fpe_FragmentShader(shaderconv_need_t* need, fpe_state_t *stat
              sprintf(buff, "// Fog On: mode=%X, source=%X\n", fogmode, fogsource);
              ShadAppend(buff);
          }
@@ -312,64 +309,11 @@ index dbe87a7c..ff74263c 100644
      }
      //Blend
      if(shaderblend) {
-diff --git a/src/gl/getter.c b/src/gl/getter.c
-index 113a36fa..5e9fd078 100644
---- a/src/gl/getter.c
-+++ b/src/gl/getter.c
-@@ -759,7 +759,7 @@ int gl4es_commonGet(GLenum pname, GLfloat *params) {
-             break;
-         case GL_FOG_HINT:
-             if(hardext.esversion==1) return 0; // fall back to actual glGet
--            *params=GL_DONT_CARE;
-+            *params=glstate->fog_hint;
-             break;
-         case GL_TEXTURE_COMPRESSION_HINT:
-             *params=GL_DONT_CARE;
-diff --git a/src/gl/glstate.c b/src/gl/glstate.c
-index fe69266e..03931f37 100644
---- a/src/gl/glstate.c
-+++ b/src/gl/glstate.c
-@@ -287,6 +287,7 @@ void* NewGLState(void* shared_glstate, int es2only) {
-     glstate->fog.end = 1.0f;
-     glstate->fog.coord_src = GL_FRAGMENT_DEPTH;
-     glstate->fog.distance = GL_EYE_PLANE_ABSOLUTE_NV;
-+    glstate->fog_hint = GL_DONT_CARE;
-     // Alpha Func
-     glstate->alphafunc = GL_ALWAYS;
-     glstate->alpharef = 0.0f;
-diff --git a/src/gl/glstate.h b/src/gl/glstate.h
-index 7362ec9c..3d19ca92 100644
---- a/src/gl/glstate.h
-+++ b/src/gl/glstate.h
-@@ -66,6 +66,7 @@ struct glstate_s {
-     int                 *shared_cnt;
-     light_state_t       light;
-     fog_t               fog;
-+    GLenum              fog_hint;
-     material_state_t    material;
-     stencil_t           stencil;
-     float               planes[MAX_CLIP_PLANES][4];
-diff --git a/src/gl/hint.c b/src/gl/hint.c
-index 655d54db..fab71766 100644
---- a/src/gl/hint.c
-+++ b/src/gl/hint.c
-@@ -19,6 +19,11 @@ void APIENTRY_GL4ES gl4es_glHint(GLenum pname, GLenum mode) {
-     switch(pname) {
-         // some Hint are not supported in GLES2, so just ignoring them
-         case GL_FOG_HINT:
-+            if(mode!=GL_FASTEST && mode!=GL_NICEST && mode!=GL_DONT_CARE) {
-+                errorShim(GL_INVALID_ENUM);
-+                return;
-+            }
-+            glstate->fog_hint = mode;
-             if(hardext.esversion>1)
-                 return;
-             gles_glHint(pname, mode);
 diff --git a/src/gl/init.c b/src/gl/init.c
-index f5b5fdfb..ab9de061 100644
+index 7526d913..847803e1 100644
 --- a/src/gl/init.c
 +++ b/src/gl/init.c
-@@ -124,6 +124,7 @@ void initialize_gl4es() {
+@@ -120,6 +120,7 @@ void initialize_gl4es() {
  
      env(LIBGL_XREFRESH, globals4es.xrefresh, "xrefresh will be called on cleanup");
      env(LIBGL_STACKTRACE, globals4es.stacktrace, "stacktrace will be printed on crash");
@@ -378,10 +322,10 @@ index f5b5fdfb..ab9de061 100644
      const int LIBGL_FB_ENV_VAR = 
  #       ifndef LIBGL_FB
 diff --git a/src/gl/init.h b/src/gl/init.h
-index c41e7247..bf2bba7a 100644
+index feffa5df..3fd337c8 100644
 --- a/src/gl/init.h
 +++ b/src/gl/init.h
-@@ -19,6 +19,7 @@ typedef struct _globals4es {
+@@ -18,6 +18,7 @@ typedef struct _globals4es {
   int showfps;
   int vsync;
   int automipmap;

@@ -8,8 +8,8 @@
 #                  shim (LD_PRELOAD, from the box's DDK) still reaches libsrv_um.
 #   LIBGL_VERTEXFOG fog per vertex, not per pixel (gl4es patch 0002): the game has
 #                  fog on everything and the SGX545 is short of shader time.
-# Line strips are drawn through glDrawElements on SGX (gl4es patch 0001): its
-# driver draws glDrawArrays(GL_LINE_STRIP) as GL_LINES.
+# Line strips are drawn through glDrawElements on the SGX 545 (gl4es patch 0003):
+# its driver draws glDrawArrays(GL_LINE_STRIP) wrong.
 #   LIBGL_MIPMAP=3 no mipmaps: the game runs with mipmapLevels:0, and mc-session
 #                  asks the DDK for linear textures, which cannot have them.
 # /usr/lib/mc-overlay comes first: its libGL.so.1 is what LWJGL dlopens; it draws
