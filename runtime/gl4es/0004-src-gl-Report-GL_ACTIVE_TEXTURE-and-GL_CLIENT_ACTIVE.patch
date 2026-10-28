@@ -1,0 +1,30 @@
+From a2207f9a04a42a42b5afc4b483a35f8d870c55e9 Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <jttelaak@hotmail.com>
+Date: Wed, 28 Oct 2026 01:53:43 -0400
+Subject: [PATCH] src/gl: Report GL_ACTIVE_TEXTURE and GL_CLIENT_ACTIVE_TEXTURE
+ from gl4es state
+
+---
+ src/gl/getter.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/gl/getter.c b/src/gl/getter.c
+index 113a36fa..7c0143bf 100644
+--- a/src/gl/getter.c
++++ b/src/gl/getter.c
+@@ -346,6 +346,12 @@ int gl4es_commonGet(GLenum pname, GLfloat *params) {
+         case GL_MAX_TEXTURE_COORDS:
+             *params = hardext.maxtex;
+             break;
++        case GL_ACTIVE_TEXTURE:
++            *params = GL_TEXTURE0 + glstate->texture.active;
++            break;
++        case GL_CLIENT_ACTIVE_TEXTURE:
++            *params = GL_TEXTURE0 + glstate->texture.client;
++            break;
+         case GL_PACK_ALIGNMENT:
+             *params = glstate->texture.pack_align;
+             break;
+-- 
+2.50.1 (Apple Git-155)
+
