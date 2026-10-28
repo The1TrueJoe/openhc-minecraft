@@ -28,7 +28,7 @@ MC_VERSION=1.7.10
 # Zulu is the maintained OpenJDK 8 build that still ships linux i686.
 JRE_URL=https://cdn.azul.com/zulu/bin/zulu8.98.0.107-ca-jre8.0.512-linux_i686.tar.gz
 GL4ES_REPO=https://github.com/ptitSeb/gl4es.git
-GL4ES_REF=2037865590d410bcd7b8d1f22b841472ed6d39ac
+GL4ES_REF=1891af323d4547487296e50ba5932bde65c7b345
 
 R="$OUT/root"
 rm -rf "$R"

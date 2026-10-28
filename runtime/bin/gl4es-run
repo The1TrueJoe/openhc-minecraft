@@ -4,17 +4,17 @@
 # gl4es turns OpenGL 2.1 into GLES2 and, in framebuffer mode (LIBGL_FB=1),
 # draws to the panel through the DDK's LinuxFB EGL instead of into the X window;
 # X (Xvfb) is only there for LWJGL's window and input.
-#   LIBGL_KEEPEGL  never eglTerminate the probe display — DDK 1.7 cannot
-#                  eglInitialize again in the same process (our gl4es patch).
 #   LIBGL_DEEPBIND=0  load the DDK without RTLD_DEEPBIND, so openHC's bus-id
 #                  shim (LD_PRELOAD, from the box's DDK) still reaches libsrv_um.
-#   LIBGL_VERTEXFOG fog per vertex, not per pixel (our gl4es patch): the game has
+#   LIBGL_VERTEXFOG fog per vertex, not per pixel (gl4es patch 0002): the game has
 #                  fog on everything and the SGX545 is short of shader time.
+# Line strips are drawn through glDrawElements on SGX (gl4es patch 0001): its
+# driver draws glDrawArrays(GL_LINE_STRIP) as GL_LINES.
 #   LIBGL_MIPMAP=3 no mipmaps: the game runs with mipmapLevels:0, and mc-session
 #                  asks the DDK for linear textures, which cannot have them.
 # /usr/lib/mc-overlay comes first: its libGL.so.1 is what LWJGL dlopens; it draws
 # the pointer and the on-screen keyboard and passes everything else to gl4es.
-export LIBGL_KEEPEGL=1 LIBGL_DEEPBIND=0 LIBGL_FB=1 LIBGL_ES=2 LIBGL_GL=21 LIBGL_NOBANNER=1
+export LIBGL_DEEPBIND=0 LIBGL_FB=1 LIBGL_ES=2 LIBGL_GL=21 LIBGL_NOBANNER=1
 export LIBGL_VERTEXFOG=1 LIBGL_MIPMAP=3
 export LIBGL_EGL=/usr/lib/sgx/libEGL.so.1 LIBGL_GLES=/usr/lib/sgx/libGLESv2.so.2
 export LD_LIBRARY_PATH=/usr/lib/mc-overlay:/usr/lib/gl4es:/usr/lib/sgx${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}

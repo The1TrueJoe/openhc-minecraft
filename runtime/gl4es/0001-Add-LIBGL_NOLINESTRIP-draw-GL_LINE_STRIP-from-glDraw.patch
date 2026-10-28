@@ -1,0 +1,130 @@
+From d4358bfd2acfcb47e866ea0196c3dfa19f34231b Mon Sep 17 00:00:00 2001
+From: Joseph Telaak <jttelaak@hotmail.com>
+Date: Tue, 27 Oct 2026 21:43:14 -0400
+Subject: [PATCH 1/2] Add LIBGL_NOLINESTRIP: draw GL_LINE_STRIP from
+ glDrawArrays with glDrawElements, on by default for PowerVR SGX
+
+---
+ USAGE.md      |  5 +++++
+ src/gl/fpe.c  | 33 +++++++++++++++++++++++++++++++--
+ src/gl/init.c | 10 ++++++++++
+ src/gl/init.h |  1 +
+ 4 files changed, 47 insertions(+), 2 deletions(-)
+
+diff --git a/USAGE.md b/USAGE.md
+index 8307a9ca..c67173c9 100644
+--- a/USAGE.md
++++ b/USAGE.md
+@@ -191,6 +191,11 @@ Initial Hardware test
+  * 0 : Default, perform initial hardware testing (using a PBuffer)
+  * 1 : Do not perform test (no extensions tested or used)
+ 
++##### LIBGL_NOLINESTRIP
++Draw GL_LINE_STRIP from glDrawArrays with glDrawElements and sequential indices (GLES2 backend)
++ * 0 : Use glDrawArrays as is. Default, except on PowerVR SGX
++ * 1 : Draw with glDrawElements. Default on PowerVR SGX, whose driver (seen on SGX545 with DDK 1.7) draws GL_LINE_STRIP from glDrawArrays as GL_LINES
++
+ ##### LIBGL_NOVAOCACHE
+ VAO Caching
+  * 0 : Default, try to cache vao to avoid memcpy in render list
+diff --git a/src/gl/fpe.c b/src/gl/fpe.c
+index c21bcf1f..98adbaf0 100644
+--- a/src/gl/fpe.c
++++ b/src/gl/fpe.c
+@@ -814,12 +814,40 @@ void APIENTRY_GL4ES fpe_glNormal3f(GLfloat nx, GLfloat ny, GLfloat nz) {
+     noerrorShim();
+ }
+ 
++// LIBGL_NOLINESTRIP: some drivers (PowerVR SGX, DDK 1.7) draw GL_LINE_STRIP from glDrawArrays as GL_LINES,
++// while glDrawElements(GL_LINE_STRIP) is right, so draw the strip through sequential indices
++static int fpe_linestrip_by_elements(GLenum mode, GLint first, GLsizei count) {
++    if(!globals4es.nolinestrip || mode!=GL_LINE_STRIP || count<2 || first<0)
++        return 0;
++    const int use_uint = (first+count-1>65535);
++    if(use_uint && !hardext.elementuint)
++        return 0;
++    GLushort local[256];
++    void* idx = (!use_uint && count<=256)?local:malloc(count*(use_uint?sizeof(GLuint):sizeof(GLushort)));
++    if(!idx)
++        return 0;
++    for(int i=0; i<count; ++i)
++        if(use_uint)
++            ((GLuint*)idx)[i] = first+i;
++        else
++            ((GLushort*)idx)[i] = first+i;
++    LOAD_GLES(glDrawElements);
++    GLuint old_buffer = wantBufferIndex(0);   // the indices are client side
++    realize_bufferIndex();
++    gles_glDrawElements(GL_LINE_STRIP, count, use_uint?GL_UNSIGNED_INT:GL_UNSIGNED_SHORT, idx);
++    wantBufferIndex(old_buffer);
++    if(idx!=local)
++        free(idx);
++    return 1;
++}
++
+ void APIENTRY_GL4ES fpe_glDrawArrays(GLenum mode, GLint first, GLsizei count) {
+     DBG(printf("fpe_glDrawArrays(%s, %d, %d), program=%d, instanceID=%u\n", PrintEnum(mode), first, count, glstate->glsl->program, glstate->instanceID);)
+     scratch_t scratch = {0};
+     realize_glenv(mode==GL_POINTS, first, count, 0, NULL, &scratch);
+     LOAD_GLES(glDrawArrays);
+-    gles_glDrawArrays(mode, first, count);
++    if(!fpe_linestrip_by_elements(mode, first, count))
++        gles_glDrawArrays(mode, first, count);
+     free_scratch(&scratch);
+ }
+ 
+@@ -887,7 +915,8 @@ void APIENTRY_GL4ES fpe_glDrawArraysInstanced(GLenum mode, GLint first, GLsizei
+                 }
+             }
+         }
+-        gles_glDrawArrays(mode, first, count);
++        if(!fpe_linestrip_by_elements(mode, first, count))
++            gles_glDrawArrays(mode, first, count);
+     }
+     free_scratch(&scratch);
+ }
+diff --git a/src/gl/init.c b/src/gl/init.c
+index 7526d913..f5b5fdfb 100644
+--- a/src/gl/init.c
++++ b/src/gl/init.c
+@@ -1,4 +1,5 @@
+ #include <stdio.h>
++#include <string.h>
+ #ifndef _WIN32
+ #include <unistd.h>
+ #else
+@@ -17,6 +18,9 @@
+ #include "fpe_cache.h"
+ #include "init.h"
+ #include "envvars.h"
++
++extern char* gl4es_original_renderer;
++
+ #if defined(__EMSCRIPTEN__) || defined(__APPLE__)
+ #define NO_INIT_CONSTRUCTOR
+ #endif
+@@ -461,6 +465,12 @@ void initialize_gl4es() {
+         }
+       }
+ 
++    // PowerVR SGX (seen on SGX545 with DDK 1.7) draws GL_LINE_STRIP from glDrawArrays as if it were GL_LINES
++    GetEnvVarBool("LIBGL_NOLINESTRIP", &globals4es.nolinestrip,
++        (hardext.vendor&VEND_IMGTEC) && gl4es_original_renderer && strstr(gl4es_original_renderer, "SGX"));
++    if(globals4es.nolinestrip)
++        SHUT_LOGD("Line strips from glDrawArrays will be drawn with glDrawElements\n");
++
+     if(GetEnvVarBool("LIBGL_AVOID16BITS", &globals4es.avoid16bits, (hardext.vendor&VEND_IMGTEC)?0:1)) {
+       if(globals4es.avoid16bits) {
+         SHUT_LOGD("Avoid 16bits textures\n");
+diff --git a/src/gl/init.h b/src/gl/init.h
+index feffa5df..c41e7247 100644
+--- a/src/gl/init.h
++++ b/src/gl/init.h
+@@ -10,6 +10,7 @@ typedef struct _globals4es {
+  int mergelist;
+  int xrefresh;
+  int stacktrace;
++ int nolinestrip;
+  int usefb;
+  int usegbm;
+  int usefbo;
