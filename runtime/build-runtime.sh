@@ -29,6 +29,11 @@ MC_VERSION=1.7.10
 JRE_URL=https://cdn.azul.com/zulu/bin/zulu8.98.0.107-ca-jre8.0.512-linux_i686.tar.gz
 GL4ES_REPO=https://github.com/ptitSeb/gl4es.git
 GL4ES_REF=1891af323d4547487296e50ba5932bde65c7b345
+# What runtime/mod compiles against (the box fetches the same jars with the game).
+LW_URL=https://libraries.minecraft.net/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar
+LW_SHA1=111e7bea9c968cdb3d06ef4632bf7ff0824d0f36
+ASM_URL=https://libraries.minecraft.net/org/ow2/asm/asm-all/5.0.3/asm-all-5.0.3.jar
+ASM_SHA1=4333508b8dd8ee72aa4e39afa713b3a74579b773
 
 R="$OUT/root"
 rm -rf "$R"
@@ -45,7 +50,7 @@ PKGS=(
 debootstrap --arch=i386 --variant=minbase --include="$(IFS=,; echo "${PKGS[*]}")" \
   "$SUITE" "$R" "$MIRROR"
 
-# --- gl4es and the overlay: built in a throwaway copy of the root, so no toolchain ships ---
+# --- gl4es, the overlay and the mod: built in a throwaway copy of the root, so no toolchain ships ---
 B="$OUT/build-root"
 rm -rf "$B"
 cp -a "$R" "$B"
@@ -55,13 +60,14 @@ for p in "$HERE"/gl4es/*.patch; do
   patch -d "$B/tmp/gl4es" -p1 --batch < "$p"
 done
 cp -r "$HERE/overlay" "$B/tmp/overlay"
+cp -r "$HERE/mod" "$B/tmp/mod"
 mount --bind /proc "$B/proc"
 trap 'umount "$B/proc" 2>/dev/null || true' EXIT
 cp /etc/resolv.conf "$B/etc/resolv.conf"
 chroot "$B" sh -ec "
   apt-get update -q
   DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends build-essential cmake libx11-dev \\
-    libfreetype-dev pkg-config
+    libfreetype-dev pkg-config openjdk-17-jdk-headless
   cd /tmp/gl4es && mkdir -p build && cd build
   # -march=bonnell: the EA's Atom CE5310 (SSSE3, MOVBE). -DNO_GBM: no GBM here.
   cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo -DNO_GBM=ON -DUSE_CLOCK=ON \\
@@ -74,10 +80,17 @@ chroot "$B" sh -ec "
   gcc -O2 -march=bonnell -Wall -shared -fPIC -Wl,-soname,libGL.so.1 -o libGL.so.1 mc-overlay.c \\
       -I/tmp/gl4es/include \$(pkg-config --cflags freetype2) \\
       -Wl,--no-as-needed ./libgl4es-stub.so \$(pkg-config --libs freetype2) -ldl
+  # openHC's launchwrapper tweaker, for the game's Java 8
+  cd /tmp/mod
+  wget -q $LW_URL $ASM_URL
+  printf '%s  %s\\n' $LW_SHA1 launchwrapper-1.12.jar $ASM_SHA1 asm-all-5.0.3.jar | sha1sum -c --quiet
+  javac --release 8 -cp launchwrapper-1.12.jar:asm-all-5.0.3.jar -d classes \$(find src -name '*.java')
+  jar cf openhc-mc.jar -C classes .
 "
 umount "$B/proc"; trap - EXIT
 install -D -m 0755 "$B/tmp/gl4es/lib/libGL.so.1" "$R/usr/lib/gl4es/libGL.so.1"
 install -D -m 0755 "$B/tmp/overlay/libGL.so.1" "$R/usr/lib/mc-overlay/libGL.so.1"
+install -D -m 0644 "$B/tmp/mod/openhc-mc.jar" "$R/usr/lib/openhc-mc/openhc-mc.jar"
 rm -rf "$B"
 
 # --- trim the runtime ---

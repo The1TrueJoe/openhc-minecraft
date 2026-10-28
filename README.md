@@ -90,6 +90,23 @@ terrain textures, fast leaves/grass/rain, no clouds. After that, settings you
 change in Video Settings stick. `mc-optifine off` and `mc-optifine on` switch it
 for the next start.
 
+## Game fixes
+
+The game starts through Mojang's launchwrapper with openHC's own tweaker
+(`runtime/mod`), after OptiFine's when that is installed. It patches one thing
+in the game's classes as they load:
+
+- **Chunk lighting retries.** Every tick, 1.7.10's integrated server retries
+  lighting on each chunk whose light isn't done yet, and chunks at the edge of
+  the loaded area can't finish until more of the world loads around them. In a
+  jungle that relighting took a whole CPU core on an EA1, and the server fell
+  behind ("Can't keep up!", several seconds at a time). Retrying every 10 ticks
+  instead: the server thread dropped from ~96% to ~18% of a core standing still,
+  with no more "Can't keep up!", and new terrain reached the client sooner
+  (43 chunks 10 s after a flight, against 17).
+
+`MC_TWEAKS=0` in the launcher's environment leaves it out.
+
 ## Controller layout (Xbox)
 
 | | In the world | In menus / inventory |
@@ -128,7 +145,7 @@ is ignored by default.
 |---|---|
 | `inputd/` | `mc-inputd` (evdev → XTest) and `mc-fetch` (HTTPS for the box), Rust, static musl |
 | `box/` | what goes on the box: `mc-session`, `mc-install`, `S96minecraft` |
-| `runtime/` | builds `runtime-i386.tar.xz`: Debian i386 + Xvfb + gl4es (+ patches) + the overlay + Zulu 8 i686 + launchers |
+| `runtime/` | builds `runtime-i386.tar.xz`: Debian i386 + Xvfb + gl4es (+ patches) + the overlay + the game fixes (`mod/`) + Zulu 8 i686 + launchers |
 | `.github/workflows/build.yml` | builds both artifacts; attaches them to a release |
 
 ## Build

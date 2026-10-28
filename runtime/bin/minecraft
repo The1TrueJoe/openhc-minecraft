@@ -28,14 +28,20 @@ pauseOnLostFocus:false
 snooperEnabled:false
 OPT
 CPA=$(echo "$CP" | sed "s|libraries/|$G/libraries/|g; s|versions/|$G/versions/|g")
-# OptiFine, when mc-optifine has installed it: start through Mojang's launchwrapper
-# with OptiFine's tweaker and its patched classes first on the classpath.
+# The game starts through Mojang's launchwrapper, which lets tweakers patch its
+# classes as they load: OptiFine's (when mc-optifine has installed it; its patched
+# classes go first on the classpath) and then openHC's (runtime/mod: Chunk lighting
+# retries spaced out so the integrated server keeps up). MC_TWEAKS=0 leaves
+# openHC's out.
 OF=$(ls "$G"/optifine/OptiFine_"$V"_*_MOD.jar 2>/dev/null | tail -n 1)
 TWEAK=
 if [ -n "$OF" ] && [ ! -e "$G/optifine/off" ]; then
-  CPA="$OF:$G/libraries/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar:$CPA"
-  MAIN=net.minecraft.launchwrapper.Launch TWEAK="--tweakClass optifine.OptiFineTweaker"
+  CPA="$OF:$CPA" TWEAK="--tweakClass optifine.OptiFineTweaker"
 fi
+if [ "${MC_TWEAKS:-1}" != 0 ]; then
+  CPA="/usr/lib/openhc-mc/openhc-mc.jar:$G/$ASM:$CPA" TWEAK="$TWEAK --tweakClass openhc.mc.Tweaker"
+fi
+[ -n "$TWEAK" ] && CPA="$G/$LW:$CPA" MAIN=net.minecraft.launchwrapper.Launch
 # Headless AWT: the game's window is LWJGL's own X window, so it needs no AWT
 # display — and initialising AWT's X11 toolkit in this process (with the DDK's
 # bus-id shim preloaded) segfaults the JVM before the game starts.

@@ -31,6 +31,12 @@ for lib in vj["libraries"]:
     if nat:
         nat = nat.replace("${arch}", "32")
         a = d["classifiers"][nat]; out.append((a["url"], "libraries/" + a["path"])); natives.append("libraries/" + a["path"])
+# Mojang's launchwrapper and the ASM it was built against: the launcher starts the
+# game through launchwrapper with openHC's tweaker (runtime/mod), and OptiFine's.
+LW = "libraries/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar"
+ASM = "libraries/org/ow2/asm/asm-all/5.0.3/asm-all-5.0.3.jar"
+for path in (LW, ASM):
+    out.append(("https://libraries.minecraft.net/" + path[len("libraries/"):], path))
 ai = vj["assetIndex"]
 out.append((ai["url"], f"assets/indexes/{ai['id']}.json"))
 idx = json.load(urllib.request.urlopen(ai["url"]))
@@ -44,5 +50,6 @@ with open(f"{ver}.launch", "w") as f:
     f.write("CP=" + ":".join(cp + [f"versions/{ver}/{ver}.jar"]) + "\n")
     f.write('NATIVES="' + " ".join(natives) + '"\n')
     f.write(f"MAIN={vj['mainClass']}\nASSET_INDEX={ai['id']}\n")
+    f.write(f"LW={LW}\nASM={ASM}\n")
     f.write("ARGS='" + vj.get("minecraftArguments", "") + "'\n")
 print(len(out), "files;", sum(o['size'] for o in idx['objects'].values())//1048576, "MB assets", file=sys.stderr)
