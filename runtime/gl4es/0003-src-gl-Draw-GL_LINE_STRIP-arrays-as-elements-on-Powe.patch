@@ -1,4 +1,4 @@
-From c7ddb9e486a55d93120b0017742a432c6893dbc3 Mon Sep 17 00:00:00 2001
+From 85f584d820322cac072fc2404e8b30076070158f Mon Sep 17 00:00:00 2001
 From: Joseph Telaak <jttelaak@hotmail.com>
 Date: Tue, 27 Oct 2026 22:39:09 -0400
 Subject: [PATCH 3/3] src/gl: Draw GL_LINE_STRIP arrays as elements on PowerVR
@@ -6,10 +6,10 @@ Subject: [PATCH 3/3] src/gl: Draw GL_LINE_STRIP arrays as elements on PowerVR
 
 ---
  USAGE.md      |  5 +++++
- src/gl/fpe.c  | 44 ++++++++++++++++++++++++++++++++++++++++++--
+ src/gl/fpe.c  | 45 +++++++++++++++++++++++++++++++++++++++++++--
  src/gl/init.c | 12 ++++++++++++
  src/gl/init.h |  1 +
- 4 files changed, 60 insertions(+), 2 deletions(-)
+ 4 files changed, 61 insertions(+), 2 deletions(-)
 
 diff --git a/USAGE.md b/USAGE.md
 index 12945b8d..a3b950d6 100644
@@ -25,10 +25,10 @@ index 12945b8d..a3b950d6 100644
 + * 0 : Default, except on PowerVR SGX 545: use glDrawArrays as is
 + * 1 : Default on PowerVR SGX 545, whose driver (DDK 1.7) draws GL_LINE_STRIP from glDrawArrays wrong. Off when LIBGL_NOTEST=1 (the renderer is unknown then) unless set explicitly
 diff --git a/src/gl/fpe.c b/src/gl/fpe.c
-index 8be24faf..76d2620d 100644
+index 8be24faf..a3d0d27c 100644
 --- a/src/gl/fpe.c
 +++ b/src/gl/fpe.c
-@@ -818,12 +818,51 @@ void APIENTRY_GL4ES fpe_glNormal3f(GLfloat nx, GLfloat ny, GLfloat nz) {
+@@ -818,12 +818,52 @@ void APIENTRY_GL4ES fpe_glNormal3f(GLfloat nx, GLfloat ny, GLfloat nz) {
      noerrorShim();
  }
  
@@ -40,14 +40,15 @@ index 8be24faf..76d2620d 100644
 +        return 0;
 +    const unsigned long long last = (unsigned long long)first + count - 1;
 +    const int use_uint = (last>65535);
-+    if(use_uint && (!hardext.elementuint || last>0xffffffffull))
++    if(use_uint && !hardext.elementuint)
 +        return 0;
 +    if(!use_uint && !sequence) {
-+        sequence = (GLushort*)malloc(65536*sizeof(GLushort));
-+        if(!sequence)
++        GLushort* table = (GLushort*)malloc(65536*sizeof(GLushort));
++        if(!table)
 +            return 0;
 +        for(int i=0; i<65536; ++i)
-+            sequence[i] = i;
++            table[i] = i;
++        sequence = table;   // publish only once filled
 +    }
 +    GLuint* idx = NULL;
 +    if(use_uint) {
@@ -81,7 +82,7 @@ index 8be24faf..76d2620d 100644
      free_scratch(&scratch);
  }
  
-@@ -891,7 +930,8 @@ void APIENTRY_GL4ES fpe_glDrawArraysInstanced(GLenum mode, GLint first, GLsizei
+@@ -891,7 +931,8 @@ void APIENTRY_GL4ES fpe_glDrawArraysInstanced(GLenum mode, GLint first, GLsizei
                  }
              }
          }
