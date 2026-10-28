@@ -10,8 +10,11 @@ G=/opt/minecraft
 cd "$G"
 # First run: settings that suit a 1.2 GHz Atom and a 720x480 panel. The game
 # rewrites this file itself afterwards, so later changes made in-game stick.
+# Render distance 3: the SGX545 is limited by the triangles it is given, so the
+# view distance sets the frame rate (measured on an EA1: 2 chunks ~54 FPS,
+# 3 ~42, 4 ~29).
 [ -f options.txt ] || cat > options.txt <<OPT
-renderDistance:4
+renderDistance:3
 fancyGraphics:false
 ao:0
 particles:2
