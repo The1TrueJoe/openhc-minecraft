@@ -65,6 +65,27 @@ game_hints() {
 	EOF
 }
 
+# The game's sound plays through openHC: ohc-audiod writes the box's
+# /etc/asound.conf, whose `default` is the board's first output (HDMI on an
+# EA1) through that output's level, duck and dmix, so the game shows up in the
+# box's volume and mixes with Spotify and AirPlay. The root's own alsa-lib reads
+# a copy. One stage cannot come along: the software tone plugin (`type ohceq`)
+# is the box's 64-bit build, which this 32-bit alsa-lib cannot load, so each
+# tone stage is replaced by a straight pass to the PCM below it. Without an
+# asound.conf (audiod not running) the root has none either and the game is
+# silent, which is what the box would do for any other program.
+audio_conf() {
+	rm -f "$R/etc/asound.conf"
+	[ -r /etc/asound.conf ] || { log "no /etc/asound.conf on the box — no sound"; return; }
+	{
+		cat /etc/asound.conf
+		awk '/^pcm\.[A-Za-z0-9_]+ \{/ { name = $1; sub(/^pcm\./, "", name) }
+		     /type ohceq/ { eq = name }
+		     eq != "" && /slave\.pcm/ {
+			print "pcm.!" eq " { type plug slave.pcm " $2 " }"; eq = "" }' /etc/asound.conf
+	} > "$R/etc/asound.conf"
+}
+
 mounts() {
 	for m in dev proc sys tmp; do
 		mountpoint -q "$R/$m" && continue
@@ -76,6 +97,7 @@ mounts() {
 		esac
 	done
 	cp -L /etc/resolv.conf "$R/etc/resolv.conf" 2>/dev/null
+	audio_conf
 	mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 }
 
