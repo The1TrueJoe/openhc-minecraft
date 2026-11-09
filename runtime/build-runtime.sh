@@ -28,7 +28,7 @@ MC_VERSION=1.7.10
 # Zulu is the maintained OpenJDK 8 build that still ships linux i686.
 JRE_URL=https://cdn.azul.com/zulu/bin/zulu8.98.0.107-ca-jre8.0.512-linux_i686.tar.gz
 GL4ES_REPO=https://github.com/ptitSeb/gl4es.git
-GL4ES_REF=1891af323d4547487296e50ba5932bde65c7b345
+GL4ES_REF=c1d7d014fcf687ed33f30ce78b6480b3be1cbeee
 # What runtime/mod compiles against (the box fetches the same jars with the game).
 LW_URL=https://libraries.minecraft.net/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar
 LW_SHA1=111e7bea9c968cdb3d06ef4632bf7ff0824d0f36
@@ -56,9 +56,6 @@ rm -rf "$B"
 cp -a "$R" "$B"
 git clone -q "$GL4ES_REPO" "$B/tmp/gl4es"
 git -C "$B/tmp/gl4es" checkout -q "$GL4ES_REF"
-for p in "$HERE"/gl4es/*.patch; do
-  patch -d "$B/tmp/gl4es" -p1 --batch < "$p"
-done
 cp -r "$HERE/overlay" "$B/tmp/overlay"
 cp -r "$HERE/mod" "$B/tmp/mod"
 mount --bind /proc "$B/proc"

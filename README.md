@@ -145,7 +145,7 @@ is ignored by default.
 |---|---|
 | `inputd/` | `mc-inputd` (evdev → XTest) and `mc-fetch` (HTTPS for the box), Rust, static musl |
 | `box/` | what goes on the box: `mc-session`, `mc-install`, `S96minecraft` |
-| `runtime/` | builds `runtime-i386.tar.xz`: Debian i386 + Xvfb + gl4es (+ patches) + the overlay + the game fixes (`mod/`) + Zulu 8 i686 + launchers |
+| `runtime/` | builds `runtime-i386.tar.xz`: Debian i386 + Xvfb + gl4es + the overlay + the game fixes (`mod/`) + Zulu 8 i686 + launchers |
 | `.github/workflows/build.yml` | builds both artifacts; attaches them to a release |
 
 ## Build

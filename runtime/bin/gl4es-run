@@ -6,9 +6,9 @@
 # X (Xvfb) is only there for LWJGL's window and input.
 #   LIBGL_DEEPBIND=0  load the DDK without RTLD_DEEPBIND, so openHC's bus-id
 #                  shim (LD_PRELOAD, from the box's DDK) still reaches libsrv_um.
-#   LIBGL_VERTEXFOG fog per vertex, not per pixel (gl4es patch 0002): the game has
+#   LIBGL_VERTEXFOG fog per vertex, not per pixel (gl4es #527): the game has
 #                  fog on everything and the SGX545 is short of shader time.
-# Line strips are drawn through glDrawElements on the SGX 545 (gl4es patch 0003):
+# Line strips are drawn through glDrawElements on the SGX 545 (gl4es #528):
 # its driver draws glDrawArrays(GL_LINE_STRIP) wrong.
 #   LIBGL_MIPMAP=3 no mipmaps: the game runs with mipmapLevels:0, and mc-session
 #                  asks the DDK for linear textures, which cannot have them.
