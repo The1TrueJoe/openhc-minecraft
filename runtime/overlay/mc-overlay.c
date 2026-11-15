@@ -2,7 +2,7 @@
  * mc-overlay — draws what the game cannot on this box: the on-screen keyboard a
  * game controller types with.
  *
- * This library is what LWJGL loads as its libGL (-Dorg.lwjgl.opengl.libname). It
+ * This library is what LWJGL loads as its libGL (first on LD_LIBRARY_PATH). It
  * defines only glXSwapBuffers — and glXGetProcAddress*, through which LWJGL
  * looks that up — and resolves everything else to the real libGL (glvnd, then
  * Mesa) through DT_NEEDED. Just before each frame is shown it draws over it with

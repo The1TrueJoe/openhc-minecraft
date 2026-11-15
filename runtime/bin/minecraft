@@ -47,12 +47,14 @@ fi
 # -server: the JVM only picks its optimising C2 compiler on a "server-class"
 # machine (2 GB or more); the EA has 1.78 GB, and C1 code runs the game's world
 # logic markedly slower.
-# libname: LWJGL loads mc-overlay as its libGL; it passes everything but the
-# frame swap on to the real one (glvnd, dispatching to Mesa).
+# LD_LIBRARY_PATH: LWJGL's natives dlopen "libGL.so.1" by name (its libname
+# property is not used on Linux), so mc-overlay's directory goes first: the
+# overlay is that libGL, and passes everything but the frame swap on to the
+# real one (glvnd, dispatching to Mesa).
+export LD_LIBRARY_PATH=/usr/lib/mc-overlay${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 exec /opt/java/jre8/bin/java -server \
   -Xms256M -Xmx"${MC_XMX:-768M}" -XX:+UseConcMarkSweepGC -Djava.awt.headless=true \
   -Djava.library.path="$G/natives" \
-  -Dorg.lwjgl.opengl.libname=/usr/lib/mc-overlay/libGL.so.1 \
   -cp "$CPA" "$MAIN" \
   --username "${1:-Player}" --version "$V" --gameDir "$G" --assetsDir "$G/assets" \
   --assetIndex "$ASSET_INDEX" --uuid 00000000000000000000000000000000 --accessToken 0 \
