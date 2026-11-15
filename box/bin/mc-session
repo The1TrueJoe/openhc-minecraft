@@ -18,12 +18,13 @@ DPY=:0
 
 log() { echo "mc-session: $*"; }
 
-# The root's Mesa needs the open SGX kernel driver, at the release it was built
-# for (runtime/build-runtime.sh, MESA_VERSION).
+# The root's Mesa needs the open SGX kernel driver at the uAPI it was built for
+# (runtime/build-runtime.sh: MESA_VERSION, MESA_UAPI_MAJOR); mc-gpucheck asks the
+# driver. Needs the root's /dev, so after mounts.
 gpu_check() {
 	for n in /sys/class/drm/renderD*; do
 		case "$(readlink "$n/device/driver" 2>/dev/null)" in
-			*/powervr_sgx) return 0 ;;
+			*/powervr_sgx) inchroot /usr/local/bin/mc-gpucheck && return 0; return 1 ;;
 		esac
 	done
 	log "no powervr_sgx GPU driver on this box — the game needs openHC's open SGX stack"
@@ -80,8 +81,8 @@ panel_size() {
 
 run() {
 	[ -x "$R/usr/local/bin/minecraft" ] || { log "not installed — run mc-install"; exit 1; }
-	gpu_check || exit 1
 	mounts
+	gpu_check || exit 1
 	panel_size
 
 	# The web view and the game cannot share the panel.

@@ -28,6 +28,9 @@ MESA_VERSION=0.2.1
 MESA_DEB=mesa-sgx_26.2.5+sgx${MESA_VERSION}_amd64.deb
 MESA_URL=https://github.com/The1TrueJoe/powervr_sgx/releases/download/v${MESA_VERSION}/${MESA_DEB}
 MESA_SHA256=4c445f97cbca686520d0e1192eb7c53525b18bf2cd331b5f07738210bc6999af
+# The kernel driver and uAPI major that Mesa speaks (DRM driver version; mc-gpucheck)
+MESA_DRIVER=powervr_sgx
+MESA_UAPI_MAJOR=1
 # What runtime/mod compiles against (the box fetches the same jars with the game).
 LW_URL=https://libraries.minecraft.net/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar
 LW_SHA1=111e7bea9c968cdb3d06ef4632bf7ff0824d0f36
@@ -70,6 +73,7 @@ rm -rf "$B"
 cp -a "$R" "$B"
 cp -r "$HERE/overlay" "$B/tmp/overlay"
 cp -r "$HERE/mod" "$B/tmp/mod"
+cp -r "$HERE/tools" "$B/tmp/tools"
 mount --bind /proc "$B/proc"
 trap 'umount "$B/proc" 2>/dev/null || true' EXIT
 chroot "$B" sh -ec "
@@ -83,6 +87,7 @@ chroot "$B" sh -ec "
   gcc -O2 -march=bonnell -Wall -shared -fPIC -Wl,-soname,libGL.so.1 -o libGL.so.1 mc-overlay.c \\
       \$(pkg-config --cflags freetype2) \\
       -Wl,--no-as-needed ./libgl-stub.so \$(pkg-config --libs freetype2) -ldl
+  gcc -O2 -Wall -o /tmp/tools/mc-gpucheck /tmp/tools/mc-gpucheck.c
   # openHC's launchwrapper tweaker, for the game's Java 8
   cd /tmp/mod
   wget -q $LW_URL $ASM_URL
@@ -93,6 +98,8 @@ chroot "$B" sh -ec "
 umount "$B/proc"; trap - EXIT
 install -D -m 0755 "$B/tmp/overlay/libGL.so.1" "$R/usr/lib/mc-overlay/libGL.so.1"
 install -D -m 0644 "$B/tmp/mod/openhc-mc.jar" "$R/usr/lib/openhc-mc/openhc-mc.jar"
+install -D -m 0755 "$B/tmp/tools/mc-gpucheck" "$R/usr/local/bin/mc-gpucheck"
+echo "$MESA_DRIVER $MESA_UAPI_MAJOR" > "$R/etc/openhc-minecraft-gpu"
 rm -rf "$B"
 
 # --- trim the runtime ---
