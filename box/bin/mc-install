@@ -69,6 +69,6 @@ for m in dev proc sys tmp; do
 		*)    mount --bind "/$m" "$R/$m" ;;
 	esac
 done
-cp -L /etc/resolv.conf "$R/etc/resolv.conf"
+cp -L /etc/resolv.conf "$R/etc/resolv.conf" && chmod 644 "$R/etc/resolv.conf"
 chroot "$R" /usr/bin/env -i HOME=/root PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/mc-get-game
 log "done — start it with: mc-session start   (or enable autostart: touch $M/autostart)"

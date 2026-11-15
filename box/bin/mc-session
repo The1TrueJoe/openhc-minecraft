@@ -67,8 +67,11 @@ mounts() {
 	mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 }
 
+# Mesa's drivers are in /opt/sgx (mesa-sgx), not where Xorg's GLX and GBM look by
+# default; without these Xorg has glamor but no GLX and the game cannot start.
 inchroot() {
 	chroot "$R" /usr/bin/env -i HOME=/root TERM=linux DISPLAY=$DPY \
+		LIBGL_DRIVERS_PATH=/opt/sgx/lib/dri GBM_BACKENDS_PATH=/opt/sgx/lib/gbm \
 		PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin "$@"
 }
 
