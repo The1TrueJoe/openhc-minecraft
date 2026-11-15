@@ -1,15 +1,14 @@
 //! mc-inputd — USB keyboards, mice and game controllers into the game's X display.
 //!
-//! The game runs on a virtual X server (Xvfb) because it has no input devices of
-//! its own; the picture goes to the panel through gl4es. This daemon owns the
-//! real devices instead: it grabs every keyboard, mouse and pad under
+//! The game's X server on the panel runs without input devices of its own. This
+//! daemon owns the real devices instead: it grabs every keyboard, mouse and pad under
 //! /dev/input (hubs included — they are just more event nodes), follows
 //! hotplug, and replays them into X with XTest. Keyboards and mice pass straight
 //! through. A pad is mapped to Minecraft's controls, with a second mapping for
 //! menus/inventories, told apart by whether the game holds the pointer grab.
 //!
-//! It also owns what the game's overlay draws (see ui.rs): the pointer in menus,
-//! and an on-screen keyboard a pad types with.
+//! It also owns what the game's overlay draws (see ui.rs): an on-screen keyboard
+//! a pad types with.
 //!
 //! Environment:
 //!   DISPLAY            X display to drive (default :0)

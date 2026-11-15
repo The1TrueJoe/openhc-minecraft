@@ -1,14 +1,13 @@
 #!/bin/sh
 # mc-session {start|stop|run|status} [USERNAME] — Minecraft on the HDMI/panel output.
 #
-# The game runs in the i386 runtime under /opt/minecraft/rootfs (see
-# runtime/build-runtime.sh). A session:
+# The game runs in the runtime under /opt/minecraft/rootfs (see
+# runtime/build-runtime.sh), on the GPU through powervr_sgx and the root's Mesa.
+# A session:
 #   1. takes the panel from the on-screen web view (S95ohc-display), if it runs;
-#   2. copies the box's PowerVR DDK (EGL/GLES, from openHC) into the root;
-#   3. starts Xvfb (the game's window and input only — the picture goes to the
-#      panel through gl4es), mc-inputd (USB keyboards, mice and pads -> X) and
-#      the game;
-#   4. when the game exits, stops both and gives the panel back.
+#   2. starts Xorg on the panel, mc-inputd (USB keyboards, mice and pads -> X)
+#      and the game;
+#   3. when the game exits, stops both and gives the panel back.
 # "start" runs all of that in the background (log: /var/log/minecraft.log),
 # "run" in the foreground, "stop" ends a running session.
 M=/opt/minecraft
@@ -19,50 +18,16 @@ DPY=:0
 
 log() { echo "mc-session: $*"; }
 
-# The DDK lives in one of openHC's i386 GPU sysroots. Copy only the DDK's own
-# libraries: those sysroots also carry their own libc, which must not shadow the
-# runtime's.
-ddk_sync() {
-	for d in /opt/sgx-i386-wpe/usr/lib /opt/sgx-i386/usr/lib; do
-		[ -e "$d/libsrv_um.so" ] || [ -e "$d/libsrv_um.so.1.7.862890" ] || continue
-		mkdir -p "$R/usr/lib/sgx"
-		for f in "$d"/libEGL.* "$d"/libGLES* "$d"/libIMGegl.* "$d"/libsrv_* "$d"/libusc.* \
-			 "$d"/libglslcompiler.* "$d"/libpvr* "$d"/libPVR* "$d"/sgx-busidshim.so; do
-			[ -e "$f" ] || [ -L "$f" ] || continue
-			cp -a "$f" "$R/usr/lib/sgx/"
-		done
-		# libIMGegl loads the window system by this fixed name; point it at
-		# the framebuffer backend whatever the sysroot did.
-		ln -sf libpvrPVR2D_LINUXFBWSEGL.so.1.7.862890 "$R/usr/lib/sgx/libpvrPVR2D_DRIWSEGL.so"
-		{ [ -r /etc/powervr.ini ] && cat /etc/powervr.ini; game_hints; } > "$R/etc/powervr.ini"
-		return 0
+# The root's Mesa needs the open SGX kernel driver, at the release it was built
+# for (runtime/build-runtime.sh, MESA_VERSION).
+gpu_check() {
+	for n in /sys/class/drm/renderD*; do
+		case "$(readlink "$n/device/driver" 2>/dev/null)" in
+			*/powervr_sgx) return 0 ;;
+		esac
 	done
-	log "no SGX545 DDK on this box (/opt/sgx-i386*) — not an openHC EA image?"
+	log "no powervr_sgx GPU driver on this box — the game needs openHC's open SGX stack"
 	return 1
-}
-
-# DDK hints for the game's process (the DDK reads the section named after the
-# executable). Measured on an EA1 in a world, each against the one before:
-#   OverloadTexLayout=1  linear textures: a glTexSubImage2D into a swizzled texture
-#                        reads the whole texture back from GPU memory and writes it
-#                        again, and the game animates its block atlas every tick
-#                        (gl4es is told no mipmaps, which linear textures cannot have)
-#   DisableHWTextureUpload=1  copy those small updates with the CPU; the GPU path
-#                        waits for the texture to be idle first
-#   *BufferSize          room for a frame's geometry and control streams, so a draw
-#                        does not wait for the GPU to drain them mid-frame
-game_hints() {
-	cat <<-EOF
-
-	[java]
-	OverloadTexLayout=1
-	DisableHWTextureUpload=1
-	DefaultVertexBufferSize=2097152
-	MaxVertexBufferSize=4194304
-	DefaultIndexBufferSize=1048576
-	DefaultPDSVertBufferSize=262144
-	DefaultVDMBufferSize=131072
-	EOF
 }
 
 # The game's sound plays through openHC: ohc-audiod writes the box's
@@ -70,8 +35,8 @@ game_hints() {
 # EA1) through that output's level, duck and dmix, so the game shows up in the
 # box's volume and mixes with Spotify and AirPlay. The root's own alsa-lib reads
 # a copy. One stage cannot come along: the software tone plugin (`type ohceq`)
-# is the box's 64-bit build, which this 32-bit alsa-lib cannot load, so each
-# tone stage is replaced by a straight pass to the PCM below it. Without an
+# is built against the box's own libraries, not the root's, so each tone stage
+# is replaced by a straight pass to the PCM below it. Without an
 # asound.conf (audiod not running) the root has none either and the game is
 # silent, which is what the box would do for any other program.
 audio_conf() {
@@ -107,14 +72,15 @@ inchroot() {
 }
 
 panel_size() {
-	s=$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null)
-	W=${s%,*}; H=${s#*,}
+	s=$(cat /sys/class/drm/card0-*/modes 2>/dev/null | head -n 1)
+	W=${s%x*}; H=${s#*x}
+	[ -n "$s" ] || { s=$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null); W=${s%,*}; H=${s#*,}; }
 	[ -n "$W" ] && [ -n "$H" ] || { W=720; H=480; }
 }
 
 run() {
 	[ -x "$R/usr/local/bin/minecraft" ] || { log "not installed — run mc-install"; exit 1; }
-	ddk_sync || exit 1
+	gpu_check || exit 1
 	mounts
 	panel_size
 
@@ -127,23 +93,25 @@ run() {
 	fi
 
 	rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
-	# -a 1 -t 0: no pointer acceleration — mc-inputd already shapes pad motion,
-	# and a mouse should move the camera 1:1.
-	inchroot /usr/bin/Xvfb $DPY -screen 0 "${W}x${H}x24" -nolisten tcp -a 1 -t 0 \
-		>/tmp/mc-xvfb.log 2>&1 &
-	xvfb=$!
-	i=0; while [ ! -S /tmp/.X11-unix/X0 ] && [ $i -lt 50 ]; do sleep 0.2; i=$((i+1)); done
+	# -s 0 -dpms: the panel never blanks while the game runs.
+	inchroot /usr/lib/xorg/Xorg $DPY -nolisten tcp -noreset -s 0 -dpms \
+		-config /etc/X11/xorg.conf -logfile /tmp/mc-xorg.log >/tmp/mc-xorg.out 2>&1 &
+	xorg=$!
+	i=0; while [ ! -S /tmp/.X11-unix/X0 ] && [ $i -lt 100 ]; do sleep 0.2; i=$((i+1)); done
+	inputd=
+	if [ -S /tmp/.X11-unix/X0 ]; then
+		DISPLAY=$DPY "$M/bin/mc-inputd" &
+		inputd=$!
+		log "playing on ${W}x${H}"
+		MC_WIDTH=$W MC_HEIGHT=$H inchroot /usr/bin/env MC_WIDTH=$W MC_HEIGHT=$H \
+			/usr/local/bin/minecraft "${1:-Player}"
+		log "game exited ($?)"
+	else
+		log "Xorg did not start (/tmp/mc-xorg.log)"
+	fi
 
-	DISPLAY=$DPY "$M/bin/mc-inputd" &
-	inputd=$!
-
-	log "playing on ${W}x${H}"
-	MC_WIDTH=$W MC_HEIGHT=$H inchroot /usr/bin/env MC_WIDTH=$W MC_HEIGHT=$H \
-		/usr/local/bin/minecraft "${1:-Player}"
-	log "game exited ($?)"
-
-	kill $inputd $xvfb 2>/dev/null
-	wait $inputd $xvfb 2>/dev/null
+	kill $inputd $xorg 2>/dev/null
+	wait $inputd $xorg 2>/dev/null
 	if [ $display_was_on = 1 ]; then
 		/etc/init.d/S95ohc-display start >/dev/null 2>&1
 	elif [ -x /etc/init.d/S01splash ]; then
@@ -163,7 +131,7 @@ case "$1" in
 		echo $! > $PIDF ;;
 	stop)
 		# Ending the game ends the session; run() then cleans up behind it
-		# (Xvfb, mc-inputd, handing the panel back). Give it time to, and only
+		# (Xorg, mc-inputd, handing the panel back). Give it time to, and only
 		# then sweep whatever is left.
 		killall java 2>/dev/null
 		if [ -f $PIDF ]; then
@@ -171,7 +139,7 @@ case "$1" in
 			while kill -0 "$pid" 2>/dev/null && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
 			kill "$pid" 2>/dev/null
 		fi
-		killall Xvfb mc-inputd 2>/dev/null
+		killall Xorg mc-inputd 2>/dev/null
 		rm -f $PIDF ;;
 	status)
 		if [ -f $PIDF ] && kill -0 "$(cat $PIDF)" 2>/dev/null; then echo running; else echo stopped; exit 1; fi ;;

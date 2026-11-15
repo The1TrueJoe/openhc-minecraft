@@ -3,9 +3,13 @@
 assets) and <ver>.launch (classpath, natives, main class) for a vanilla client.
 
 Only URLs on Mojang's own servers are recorded; mc-install downloads them on
-the box. Natives are the 32-bit Linux ones: the game runs on a 32-bit JVM."""
+the box. ARCH (64 or 32) picks the natives for a 64- or 32-bit JVM where a library
+has per-arch ones; LWJGL's Linux natives carry both.
+
+    mcfiles.py VERSION [ARCH]"""
 import json, sys, urllib.request
 ver = sys.argv[1]
+arch = sys.argv[2] if len(sys.argv) > 2 else "64"
 man = json.load(urllib.request.urlopen("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"))
 vurl = next(v["url"] for v in man["versions"] if v["id"] == ver)
 vj = json.load(urllib.request.urlopen(vurl))
@@ -29,7 +33,7 @@ for lib in vj["libraries"]:
         a = d["artifact"]; out.append((a["url"], "libraries/" + a["path"])); cp.append("libraries/" + a["path"])
     nat = lib.get("natives", {}).get("linux")
     if nat:
-        nat = nat.replace("${arch}", "32")
+        nat = nat.replace("${arch}", arch)
         a = d["classifiers"][nat]; out.append((a["url"], "libraries/" + a["path"])); natives.append("libraries/" + a["path"])
 # Mojang's launchwrapper and the ASM it was built against: the launcher starts the
 # game through launchwrapper with openHC's tweaker (runtime/mod), and OptiFine's.

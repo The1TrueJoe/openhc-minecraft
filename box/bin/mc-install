@@ -1,17 +1,17 @@
 #!/bin/sh
 # mc-install [RUNTIME] — install (or update) the game runtime and the game.
 #
-# RUNTIME is a runtime-i386.tar.xz path or URL; default: this repo's latest
+# RUNTIME is a runtime-amd64.tar.xz path or URL; default: this repo's latest
 # release. Then the game itself is downloaded from Mojang by mc-get-game inside
-# the runtime. Re-running is safe: worlds, options.txt and already-downloaded
-# game files are kept.
+# the runtime. Re-running is safe: worlds, options, OptiFine and already-downloaded
+# game files are kept; the rest of the old root is replaced.
 #
 # Needs ~900 MB free on /. openHC grows its root filesystem to fill the eMMC
 # partition at boot (S03growfs), so any current EA image has several GB.
 set -e
 M=/opt/minecraft
 R=$M/rootfs
-URL=https://github.com/The1TrueJoe/openhc-minecraft/releases/latest/download/runtime-i386.tar.xz
+URL=https://github.com/The1TrueJoe/openhc-minecraft/releases/latest/download/runtime-amd64.tar.xz
 SRC=${1:-$URL}
 NEED_MB=900
 
@@ -22,8 +22,8 @@ free_mb() { df -m "$1" | awk 'NR==2 {print $4}'; }
 case "$SRC" in
 	http://*|https://*)
 		log "downloading $SRC"
-		"$M/bin/mc-fetch" "$SRC" /tmp/runtime-i386.tar.xz
-		TARBALL=/tmp/runtime-i386.tar.xz ;;
+		"$M/bin/mc-fetch" "$SRC" /tmp/runtime-amd64.tar.xz
+		TARBALL=/tmp/runtime-amd64.tar.xz ;;
 	*)	TARBALL=$SRC ;;
 esac
 [ -r "$TARBALL" ] || { log "no runtime at $TARBALL"; exit 1; }
@@ -34,13 +34,30 @@ if [ "$(free_mb /)" -lt $NEED_MB ]; then
 	exit 1
 fi
 
-# 3. unpack over any previous runtime (game data under opt/minecraft survives:
-#    the tarball only carries the file list and launch info there)
-mkdir -p "$R"
+# 3. a fresh root: the game's own data (opt/minecraft: worlds, options, OptiFine,
+#    downloaded game files) moves aside, the old root goes, the new one is
+#    unpacked and the data moves back. The runtime's own files there (the game's
+#    file list and launch info) win.
+G=$M/game-data
 for m in dev proc sys tmp; do mountpoint -q "$R/$m" && umount "$R/$m" 2>/dev/null; done
+if grep -q " $R/" /proc/mounts; then
+	log "something is still mounted under $R — stop the game (mc-session stop) and retry"
+	exit 1
+fi
+[ -d "$R/opt/minecraft" ] && [ ! -e "$G" ] && mv "$R/opt/minecraft" "$G"
+rm -rf "$R"
+mkdir -p "$R"
 log "unpacking the runtime"
 xz -dc "$TARBALL" | tar x -C "$R"
-[ "$TARBALL" = /tmp/runtime-i386.tar.xz ] && rm -f "$TARBALL"
+[ "$TARBALL" = /tmp/runtime-amd64.tar.xz ] && rm -f "$TARBALL"
+if [ -d "$G" ]; then
+	mkdir -p "$R/opt/minecraft"
+	for e in "$G"/* "$G"/.[!.]*; do
+		[ -e "$e" ] || continue
+		[ -e "$R/opt/minecraft/${e##*/}" ] || mv "$e" "$R/opt/minecraft/"
+	done
+	rm -rf "$G"
+fi
 cat "$R/etc/openhc-minecraft-runtime" 2>/dev/null
 
 # 4. the game, from Mojang

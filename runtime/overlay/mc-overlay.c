@@ -1,21 +1,16 @@
 /*
- * mc-overlay — draws what the game cannot on this box: the pointer while a menu
- * is up, and the on-screen keyboard a game controller types with.
+ * mc-overlay — draws what the game cannot on this box: the on-screen keyboard a
+ * game controller types with.
  *
- * The game's window lives on a virtual X server (Xvfb); its picture reaches the
- * panel through gl4es in framebuffer mode, so the X cursor is never seen. This
- * library is what LWJGL loads as its libGL (-Dorg.lwjgl.opengl.libname). It
+ * This library is what LWJGL loads as its libGL (-Dorg.lwjgl.opengl.libname). It
  * defines only glXSwapBuffers — and glXGetProcAddress*, through which LWJGL
- * looks that up — and resolves everything else to gl4es through DT_NEEDED. Just
- * before each frame is shown it draws over it, with plain GL 1.x calls into gl4es
- * so gl4es's own state tracking stays right, and puts back what it changed.
+ * looks that up — and resolves everything else to the real libGL (glvnd, then
+ * Mesa) through DT_NEEDED. Just before each frame is shown it draws over it with
+ * plain GL 1.x calls and puts back what it changed.
  *
  * What to draw comes from mc-inputd, which owns the state: /tmp/mc-ui (struct
- * mcui below; must match inputd/src/ui.rs, as must the keyboard layout).
- *
- * It also makes every frame opaque. The game clears to alpha 0 and the EA's
- * display plane blends the framebuffer by its alpha, so the sky (and anything
- * else left at alpha < 1) came out black on HDMI.
+ * mcui below; must match inputd/src/ui.rs, as must the keyboard layout). The
+ * pointer is the X server's own cursor.
  */
 #define _GNU_SOURCE
 #include <GL/gl.h>
@@ -55,32 +50,6 @@ static const struct mcui *state(void)
 	return ui && ui->magic == MCUI_MAGIC ? (const struct mcui *)ui : NULL;
 }
 
-/* ---- the pointer: an arrow, 1 outline, . fill, drawn at POINTER_SCALE ---- */
-static const char *arrow[] = {
-	"1           ",
-	"11          ",
-	"1.1         ",
-	"1..1        ",
-	"1...1       ",
-	"1....1      ",
-	"1.....1     ",
-	"1......1    ",
-	"1.......1   ",
-	"1........1  ",
-	"1.....11111 ",
-	"1..1..1     ",
-	"1.1 1..1    ",
-	"11  1..1    ",
-	"1    1..1   ",
-	"     1..1   ",
-	"      11    ",
-};
-#define ARROW_W 16
-#define ARROW_H 32
-/* 1: the arrow's own 12x17 pixels, a desktop-sized pointer on the 720x480 panel
- * (an HDMI TV scales the whole picture up anyway); 2 was too big. */
-#define POINTER_SCALE 1
-
 /* ---- the keyboard; layout as in inputd/src/ui.rs ---- */
 static const char *rows[2][4] = {
 	{ "1234567890", "qwertyuiop", "asdfghjkl/", "zxcvbnm,.-" },
@@ -95,7 +64,7 @@ static const char *legend = "A type   X delete   Y shift   B close   Start enter
 #define ATLAS 256
 static struct { int x, y, w, h, left, top, adv; } glyph[2][96]; /* [small, big][' '..'~'] */
 static int line_h[2];
-static GLuint tex_font, tex_arrow;
+static GLuint tex_font;
 static int ready, failed;
 
 static int bake(FT_Face face, int size, int which, unsigned char *atlas, int *px, int *py, int *rowh)
@@ -133,7 +102,6 @@ static int bake(FT_Face face, int size, int which, unsigned char *atlas, int *px
 static void setup(void)
 {
 	static unsigned char alpha[ATLAS * ATLAS], rgba[ATLAS * ATLAS * 4];
-	static unsigned char apix[ARROW_W * ARROW_H * 4];
 	FT_Library ft;
 	FT_Face face;
 	int px = 0, py = 0, rowh = 0;
@@ -149,24 +117,11 @@ static void setup(void)
 		rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = 255;
 		rgba[i * 4 + 3] = alpha[i];
 	}
-	for (int y = 0; y < (int)(sizeof arrow / sizeof *arrow); y++)
-		for (int x = 0; arrow[y][x]; x++) {
-			unsigned char *p = apix + (y * ARROW_W + x) * 4;
-			if (arrow[y][x] == '1')
-				p[3] = 255;
-			else if (arrow[y][x] == '.')
-				p[0] = p[1] = p[2] = p[3] = 255;
-		}
 	glGenTextures(1, &tex_font);
 	glBindTexture(GL_TEXTURE_2D, tex_font);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ATLAS, ATLAS, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-	glGenTextures(1, &tex_arrow);
-	glBindTexture(GL_TEXTURE_2D, tex_arrow);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, ARROW_W, ARROW_H, 0, GL_RGBA, GL_UNSIGNED_BYTE, apix);
 	failed = 0;
 	ready = 1;
 }
@@ -252,25 +207,11 @@ static void draw_keyboard(const struct mcui *s)
 	}
 }
 
-static void draw_pointer(const struct mcui *s)
-{
-	glEnable(GL_TEXTURE_2D);
-	glBindTexture(GL_TEXTURE_2D, tex_arrow);
-	glColor4f(1, 1, 1, 1);
-	float x = s->x, y = s->y, w = ARROW_W * POINTER_SCALE, h = ARROW_H * POINTER_SCALE;
-	glBegin(GL_QUADS);
-	glTexCoord2f(0, 0); glVertex2f(x, y);
-	glTexCoord2f(1, 0); glVertex2f(x + w, y);
-	glTexCoord2f(1, 1); glVertex2f(x + w, y + h);
-	glTexCoord2f(0, 1); glVertex2f(x, y + h);
-	glEnd();
-}
-
 /* Draw over the frame, leaving the GL state as the game had it. */
 static void overlay(void)
 {
 	const struct mcui *s = state();
-	if (!s || (!s->cursor && !s->osk) || s->w <= 0 || s->h <= 0 || failed)
+	if (!s || !s->osk || s->w <= 0 || s->h <= 0 || failed)
 		return;
 	struct mcui st = *s; /* one consistent copy for this frame */
 
@@ -323,10 +264,7 @@ static void overlay(void)
 		glDepthMask(GL_FALSE);
 		glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
-		if (st.osk)
-			draw_keyboard(&st);
-		if (st.cursor)
-			draw_pointer(&st);
+		draw_keyboard(&st);
 
 		glMatrixMode(GL_MODELVIEW);
 		glPopMatrix();
@@ -362,31 +300,12 @@ static void overlay(void)
 /* ---- the hooks ---- */
 typedef void *(*getproc_t)(const GLubyte *);
 
-/* Set alpha to 1 everywhere, colour untouched: one alpha-only clear. */
-static void opaque(void)
-{
-	GLboolean mask[4], scissor = glIsEnabled(GL_SCISSOR_TEST);
-	GLfloat clear[4];
-
-	glGetBooleanv(GL_COLOR_WRITEMASK, mask);
-	glGetFloatv(GL_COLOR_CLEAR_VALUE, clear);
-	glDisable(GL_SCISSOR_TEST);
-	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_TRUE);
-	glClearColor(0, 0, 0, 1);
-	glClear(GL_COLOR_BUFFER_BIT);
-	glClearColor(clear[0], clear[1], clear[2], clear[3]);
-	glColorMask(mask[0], mask[1], mask[2], mask[3]);
-	if (scissor)
-		glEnable(GL_SCISSOR_TEST);
-}
-
 void glXSwapBuffers(void *dpy, unsigned long drawable)
 {
 	static void (*real)(void *, unsigned long);
 	if (!real)
 		real = (void (*)(void *, unsigned long))dlsym(RTLD_NEXT, "glXSwapBuffers");
 	overlay();
-	opaque();
 	real(dpy, drawable);
 }
 

@@ -29,7 +29,7 @@ impl X {
         let (conn, screen) = x11rb::connect(Some(display)).ok()?;
         let s = &conn.setup().roots[screen];
         let (root, width, height) = (s.root, s.width_in_pixels as i16, s.height_in_pixels as i16);
-        // XTest must be there (Xvfb always has it); fail early rather than drop input.
+        // XTest must be there (Xorg has it by default); fail early rather than drop input.
         conn.xtest_get_version(2, 2).ok()?.reply().ok()?;
         Some(X { conn, root, width, height })
     }
