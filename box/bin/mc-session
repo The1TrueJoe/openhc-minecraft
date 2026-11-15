@@ -56,12 +56,20 @@ audio_conf() {
 # mc-record takes the game's sound from the ALSA loopback: the game's default
 # plays to the box's default and, in step, to the loopback's playback side; its
 # capture side (hw:Loopback,1,0) is what a recording reads. The loopback runs on
-# the HDMI card's timer, so the two never drift apart. Without the module the
-# game just plays as before, and recordings have no sound.
+# the timer of the card the default plays on, so the two never drift apart (on
+# any other card's timer the loopback stalls whenever that card is idle, and the
+# game's sound underruns). Without the module the game just plays as before, and
+# recordings have no sound.
 record_tap() {
 	def=$(sed -n 's/^pcm\.!default "\(.*\)"$/\1/p' /etc/asound.conf | tail -n 1)
 	[ -n "$def" ] || return 0
-	[ -e /proc/asound/Loopback ] || modprobe snd-aloop pcm_substreams=1 timer_source=HDMI 2>/dev/null ||
+	card=$(awk -v d="pcm.${def}_dmix" '$1 == d { f = 1 }
+		f && /pcm "hw:/ { match($0, /CARD=[^,"]*/); print substr($0, RSTART + 5, RLENGTH - 5); exit }' /etc/asound.conf)
+	src=$(cut -d, -f1 /sys/module/snd_aloop/parameters/timer_source 2>/dev/null)
+	if [ -e /proc/asound/Loopback ] && [ "$src" != "$card" ]; then
+		rmmod snd_aloop 2>/dev/null	# not while something has it open; then it stays as it is
+	fi
+	[ -e /proc/asound/Loopback ] || modprobe snd-aloop pcm_substreams=1 ${card:+timer_source=$card} 2>/dev/null ||
 		modprobe snd-aloop pcm_substreams=1 2>/dev/null || return 0
 	[ -e /proc/asound/Loopback ] || return 0
 	cat <<-EOF
