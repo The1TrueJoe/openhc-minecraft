@@ -443,8 +443,7 @@ static void take(void)
 
 	/* 1. the shown frame into a texture */
 	ActiveTexture(GL_TEXTURE0);
-	BindFramebuffer(GL_FRAMEBUFFER_EXT, 0);
-	glReadBuffer(GL_BACK);
+	BindFramebuffer(GL_FRAMEBUFFER_EXT, 0);	/* its read buffer is what is being drawn */
 	glBindTexture(GL_TEXTURE_2D, c.src);
 	glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, c.sw, c.sh);
 
