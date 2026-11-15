@@ -80,12 +80,17 @@ stop() {
 	[ -f $D/pid ] || { log "not recording"; return 0; }
 	pid=$(cat $D/pid)
 	rm -f $D/on	# the game closes the FIFO; ffmpeg finishes the file
+	# If the game never opened it, ffmpeg is still blocked opening it: a
+	# read-write open never blocks, lets that open through and closes at once.
+	[ -p $D/video ] && : <>$D/video
 	i=0
 	while kill -0 "$pid" 2>/dev/null && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
 	kill -INT "$pid" 2>/dev/null
 	i=0
 	while kill -0 "$pid" 2>/dev/null && [ $i -lt 10 ]; do sleep 0.5; i=$((i+1)); done
 	kill "$pid" 2>/dev/null
+	sleep 1
+	kill -9 "$pid" 2>/dev/null
 	f=$R$(cat $D/file)
 	grep -v "^$" $D/ffmpeg.log 2>/dev/null | tail -n 3
 	rm -f $D/pid $D/video
