@@ -25,6 +25,28 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends debootstrap xz-utils
       - name: Build the runtime
         run: sudo ./runtime/build-runtime.sh out
+      - name: Smoke-test the recorder's ffmpeg
+        # mc-record's video path without a GPU: 2 s of raw I420 through a FIFO,
+        # encoded with mc-record's settings by the runtime's own ffmpeg.
+        run: |
+          set -e
+          R=out/root
+          sudo mkdir -p $R/tmp/rec
+          sudo mkfifo $R/tmp/rec/video
+          sudo chroot $R /usr/local/bin/ffmpeg -nostdin -hide_banner -loglevel warning -y \
+            -f rawvideo -pix_fmt yuv420p -video_size 720x480 -framerate 30 \
+            -use_wallclock_as_timestamps 1 -thread_queue_size 64 -i /tmp/rec/video \
+            -map 0:v -fps_mode cfr -r 30 \
+            -c:v libx264 -preset ultrafast -crf 23 -g 60 -pix_fmt yuv420p \
+            -color_range tv -colorspace smpte170m -color_primaries smpte170m -color_trc smpte170m \
+            -shortest -movflags +frag_keyframe+empty_moov+default_base_moof /tmp/rec/out.mp4 &
+          ff=$!
+          for i in $(seq 60); do head -c 518400 /dev/urandom; sleep 0.033; done | sudo tee $R/tmp/rec/video >/dev/null
+          wait $ff
+          ls -l $R/tmp/rec/out.mp4
+          test "$(sudo stat -c %s $R/tmp/rec/out.mp4)" -gt 100000
+          sudo chroot $R /usr/local/bin/ffmpeg -hide_banner -encoders 2>/dev/null | grep -E "libx264|aac"
+          sudo chroot $R /usr/local/bin/mc-gpucheck || test $? -eq 1
       - uses: actions/upload-artifact@v4
         with:
           name: runtime-amd64
