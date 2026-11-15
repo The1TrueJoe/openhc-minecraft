@@ -23,6 +23,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -157,6 +158,7 @@ static struct {
 	int state[SLOTS];		/* FREE, PENDING (read into), MAPPED */
 	int fd;
 	size_t size;
+	int room;			/* the FIFO's capacity when it holds a frame, else 0 */
 	double next;			/* when the next frame is due */
 	unsigned long taken, dropped;
 	pthread_t worker;
@@ -189,6 +191,17 @@ static void *work(void *arg)
 		int slot = w.slot;
 		pthread_mutex_unlock(&w.m);
 
+		/* Only a whole frame goes in: one the encoder has no room for yet is
+		 * dropped here, before it is copied, never cut short. */
+		int queued = 0;
+		if (c.room && ioctl(c.fd, FIONREAD, &queued) == 0 && (size_t)(c.room - queued) < c.size) {
+			pthread_mutex_lock(&w.m);
+			w.in = NULL;
+			w.copied = slot;
+			c.dropped++;
+			pthread_mutex_unlock(&w.m);
+			continue;
+		}
 		memcpy(w.buf, in, c.size);
 
 		pthread_mutex_lock(&w.m);
@@ -197,10 +210,10 @@ static void *work(void *arg)
 		pthread_mutex_unlock(&w.m);
 
 		for (size_t off = 0; off < c.size;) {
-			/* ffmpeg stuck for 2 s counts as gone: the GL thread may be
-			 * waiting to end the recording */
+			/* there was room, so this only waits on a pipe smaller than a
+			 * frame; ffmpeg stuck for 10 s counts as gone */
 			struct pollfd pf = { c.fd, POLLOUT, 0 };
-			ssize_t n = poll(&pf, 1, 2000) == 1 ? write(c.fd, w.buf + off, c.size - off) : -1;
+			ssize_t n = poll(&pf, 1, 10000) == 1 ? write(c.fd, w.buf + off, c.size - off) : -1;
 			if (n < 0 && errno == EINTR)
 				continue;
 			if (n <= 0) {	/* ffmpeg is gone: stop writing */
@@ -349,6 +362,11 @@ static int start(void *dpy, unsigned long drawable)
 		return 1;
 
 	c.size = (size_t)c.w * c.h * 3 / 2;
+	/* a FIFO big enough for two frames (the default 1 MiB limit allows 720x480) */
+	if (fcntl(c.fd, F_SETPIPE_SZ, (int)(2 * c.size)) < 0 && fcntl(c.fd, F_SETPIPE_SZ, (int)c.size) < 0)
+		fcntl(c.fd, F_SETPIPE_SZ, 1 << 20);
+	int cap = fcntl(c.fd, F_GETPIPE_SZ);
+	c.room = cap >= (int)c.size ? cap : 0;
 	w.buf = malloc(c.size);
 	if (!w.buf || setup()) {
 		fprintf(stderr, "mc-record: no GPU capture (GL setup failed)\n");
