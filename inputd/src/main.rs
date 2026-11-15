@@ -13,6 +13,8 @@
 //! Environment:
 //!   DISPLAY            X display to drive (default :0)
 //!   MC_INPUT_IGNORE    comma-separated device-name substrings to leave alone
+//!   MC_RECORD          what the Xbox button and F12 run with "toggle"
+//!                      (default /opt/minecraft/bin/mc-record)
 //!                      (default "openHC IR" — the front IR receiver)
 //!   MC_PAD_LOOK        right-stick look speed, pixels per tick at full tilt (default 14)
 //!   MC_PAD_CURSOR      stick cursor speed in menus (default 6)
@@ -45,6 +47,7 @@ const KEY_D: u16 = 32;
 const KEY_LEFTSHIFT: u16 = 42;
 const KEY_SPACE: u16 = 57;
 const KEY_F5: u16 = 63;
+const KEY_F12: u16 = 88;
 const KEY_LEFT: u16 = 105;
 const KEY_RIGHT: u16 = 106;
 
@@ -93,7 +96,7 @@ fn game_map(s: Src) -> Option<Out> {
         Src::Btn(BTN_TR) => Out::Wheel(5),               // hotbar right
         Src::Btn(BTN_THUMBL) => Out::Key(KEY_LEFTCTRL),  // sprint (hold)
         Src::Btn(BTN_THUMBR) => Out::Key(KEY_F5),        // camera
-        Src::Btn(BTN_START) | Src::Btn(BTN_MODE) => Out::Key(KEY_ESC),
+        Src::Btn(BTN_START) => Out::Key(KEY_ESC),
         Src::Btn(BTN_SELECT) => Out::Key(KEY_T),         // chat (the keyboard opens with it)
         Src::Btn(BTN_TL2) | Src::TrigL => Out::Button(3), // use / place
         Src::Btn(BTN_TR2) | Src::TrigR => Out::Button(1), // attack / mine
@@ -114,7 +117,7 @@ fn menu_map(s: Src) -> Option<Out> {
     Some(match s {
         Src::Btn(BTN_SOUTH) => Out::Button(1),           // click
         Src::Btn(BTN_X) => Out::Button(3),               // right click (split a stack)
-        Src::Btn(BTN_EAST) | Src::Btn(BTN_START) | Src::Btn(BTN_MODE) => Out::Key(KEY_ESC),
+        Src::Btn(BTN_EAST) | Src::Btn(BTN_START) => Out::Key(KEY_ESC),
         Src::Btn(BTN_Y) => Out::Key(KEY_E),              // close the inventory
         Src::Btn(BTN_THUMBL) => Out::Key(KEY_LEFTSHIFT), // shift-click with A
         Src::Btn(BTN_TL) => Out::Wheel(4),               // scroll
@@ -123,6 +126,17 @@ fn menu_map(s: Src) -> Option<Out> {
         Src::Btn(BTN_TR2) | Src::TrigR => Out::Button(1),
         _ => return None,
     })
+}
+
+/// Start or stop a recording (mc-record toggle), without waiting for it.
+fn record_toggle() {
+    let cmd = std::env::var("MC_RECORD").unwrap_or_else(|_| "/opt/minecraft/bin/mc-record".into());
+    match std::process::Command::new(&cmd).arg("toggle").spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+        }
+        Err(e) => eprintln!("mc-inputd: {cmd}: {e}"),
+    }
 }
 
 fn env_f32(k: &str, d: f32) -> f32 {
@@ -255,6 +269,12 @@ impl Bridge {
     /// Drive one pad control to `on`, remembering what a press produced so the
     /// release undoes exactly that even if the mode flipped in between.
     fn set(&mut self, dev: usize, s: Src, on: bool) {
+        if s == Src::Btn(BTN_MODE) {
+            if on {
+                record_toggle(); // the Xbox button, anywhere
+            }
+            return;
+        }
         let key = (dev, s);
         if let Some(d) = dpad_dir(s) {
             self.nav[d] = on && !self.in_game;
@@ -310,7 +330,7 @@ impl Bridge {
                 self.tap(KEY_ENTER, false);
                 self.osk.open = false;
             }
-            Src::Btn(BTN_EAST) | Src::Btn(BTN_SELECT) | Src::Btn(BTN_MODE) => self.osk.open = false,
+            Src::Btn(BTN_EAST) | Src::Btn(BTN_SELECT) => self.osk.open = false,
             Src::Btn(BTN_TL) => self.tap(KEY_LEFT, false),
             Src::Btn(BTN_TR) => self.tap(KEY_RIGHT, false),
             _ => {}
@@ -599,6 +619,12 @@ fn handle(b: &mut Bridge, d: &mut Dev, idx: usize, ev: Event) {
                     BTN_MIDDLE => x.button(2, down),
                     BTN_SIDE => x.button(8, down),
                     BTN_EXTRA => x.button(9, down),
+                    KEY_F12 => {
+                        if down {
+                            record_toggle();
+                        }
+                        true
+                    }
                     c if c < 0x100 => x.key(keycode(c), down),
                     _ => true,
                 };

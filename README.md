@@ -102,6 +102,35 @@ in the game's classes as they load:
 
 `MC_TWEAKS=0` in the launcher's environment leaves it out.
 
+## Recording
+
+The Xbox button on a pad, or F12 on a keyboard, starts and stops a recording of
+the game, sound included. From a shell on the box:
+
+```bash
+/opt/minecraft/bin/mc-record start
+```
+
+```bash
+/opt/minecraft/bin/mc-record stop
+```
+
+Recordings are MP4 files (H.264 + AAC) in
+`/opt/minecraft/rootfs/opt/minecraft/recordings`; `mc-record list` shows them.
+Copy one off with `scp`:
+
+```bash
+scp 'root@<box>:/opt/minecraft/rootfs/opt/minecraft/recordings/*.mp4' .
+```
+
+The picture is taken inside the game's frame swap: the GPU scales each frame and
+converts it to the video's YUV format, so the CPU reads back less than half as
+much and only encodes. Frames the encoder can't keep up with are dropped rather
+than slowing the game. `MC_REC_SIZE` (for example `360x240`, the cheapest),
+`MC_REC_FPS` (default 30) and `MC_REC_CRF` (x264 quality, default 23) set a
+recording up; it stops itself 200 MB short of a full disk. A recording cut short
+by a crash or power loss still plays.
+
 ## Controller layout (Xbox)
 
 | | In the world | In menus / inventory |
@@ -117,7 +146,8 @@ in the game's classes as they load:
 | LB / RB | hotbar | scroll |
 | L3 | sprint (hold) | shift (shift-click with A) |
 | R3 | camera (F5) | |
-| Start / Guide | pause (Esc) | back |
+| Start | pause (Esc) | back |
+| Guide (Xbox button) | start / stop recording | start / stop recording |
 | Back | chat, with the on-screen keyboard | on-screen keyboard |
 
 The pointer is the X server's own cursor, shown whenever a menu is up, for a
@@ -139,7 +169,7 @@ is ignored by default.
 | Path | What |
 |---|---|
 | `inputd/` | `mc-inputd` (evdev → XTest) and `mc-fetch` (HTTPS for the box), Rust, static musl |
-| `box/` | what goes on the box: `mc-session`, `mc-install`, `S96minecraft` |
+| `box/` | what goes on the box: `mc-session`, `mc-install`, `mc-record`, `S96minecraft` |
 | `runtime/` | builds `runtime-amd64.tar.xz`: Debian trixie amd64 + Xorg + Mesa (mesa-sgx) + the overlay + the game fixes (`mod/`) + Zulu 8 x64 + launchers |
 | `.github/workflows/build.yml` | builds both artifacts; attaches them to a release |
 
