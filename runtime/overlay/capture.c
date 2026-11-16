@@ -3,7 +3,7 @@
  *
  * mc-record starts ffmpeg on a FIFO and writes "W H FPS" to /tmp/mc-rec/on.
  * While that file exists, every frame due at FPS is:
- *   1. copied on the GPU from the back buffer into a texture;
+ *   1. blitted and scaled on the GPU from the back buffer into a WxH texture;
  *   2. drawn by a shader into an RGBA texture W/4 wide and H*3/2 high whose
  *      bytes, read in order, are the frame as I420 at WxH (BT.601, TV range):
  *      the GPU does the scaling and the colour conversion, and the CPU reads
@@ -14,6 +14,8 @@
  *      so the game never waits. A worker thread writes the frame to the FIFO;
  *      a frame it has no time for is dropped, not waited for.
  * Removing the file ends the recording: the FIFO closes and ffmpeg finishes.
+ * A fourth field in the file is a cost probe that writes nothing to the FIFO:
+ * b = blit only, c = pack only (from a frame blitted once), d = glFlush only.
  *
  * GL state the game had is put back: everything here is inside
  * glPushAttrib/glPushClientAttrib, plus the bindings those do not cover.
@@ -62,6 +64,7 @@ static PFNGLBINDFRAMEBUFFEREXTPROC BindFramebuffer;
 static PFNGLFRAMEBUFFERTEXTURE2DEXTPROC FramebufferTexture2D;
 static PFNGLCHECKFRAMEBUFFERSTATUSEXTPROC CheckFramebufferStatus;
 static PFNGLDELETEFRAMEBUFFERSEXTPROC DeleteFramebuffers;
+static PFNGLBLITFRAMEBUFFEREXTPROC BlitFramebuffer;
 static PFNGLBINDBUFFERPROC BindBuffer;
 
 typedef void (*querydrawable_t)(void *, unsigned long, int, unsigned int *);
@@ -100,6 +103,7 @@ static int load(void)
 	P2(FramebufferTexture2D, "glFramebufferTexture2D", "glFramebufferTexture2DEXT");
 	P2(CheckFramebufferStatus, "glCheckFramebufferStatus", "glCheckFramebufferStatusEXT");
 	P2(DeleteFramebuffers, "glDeleteFramebuffers", "glDeleteFramebuffersEXT");
+	P2(BlitFramebuffer, "glBlitFramebuffer", "glBlitFramebufferEXT");
 	P(BindBuffer, "glBindBuffer");
 	return 0;
 #undef P
@@ -147,7 +151,8 @@ static struct {
 	int on, broken;
 	int w, h, fps;
 	unsigned sw, sh;		/* source: the window */
-	GLuint src, dst[SLOTS], fbo[SLOTS], prog;
+	GLuint src, sfbo, dst[SLOTS], fbo[SLOTS], prog;
+	char probe;			/* 0, or a cost probe: b, c or d */
 	GLint u_size, u_src;
 	int packed[SLOTS];		/* holds a frame not read back yet */
 	int k;				/* the target the next capture packs into */
@@ -247,6 +252,8 @@ static void teardown(void)
 	if (c.prog)
 		DeleteProgram(c.prog);
 	DeleteFramebuffers(SLOTS, c.fbo);
+	DeleteFramebuffers(1, &c.sfbo);
+	c.sfbo = 0;
 	glDeleteTextures(1, &c.src);
 	glDeleteTextures(SLOTS, c.dst);
 	for (int i = 0; i < SLOTS; i++)
@@ -281,7 +288,12 @@ static int setup(void)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, c.sw, c.sh, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, c.w, c.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	GenFramebuffers(1, &c.sfbo);
+	BindFramebuffer(GL_FRAMEBUFFER_EXT, c.sfbo);
+	FramebufferTexture2D(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, c.src, 0);
+	if (CheckFramebufferStatus(GL_FRAMEBUFFER_EXT) != GL_FRAMEBUFFER_COMPLETE_EXT)
+		return -1;
 
 	glGenTextures(SLOTS, c.dst);
 	GenFramebuffers(SLOTS, c.fbo);
@@ -323,7 +335,8 @@ static int start(void *dpy, unsigned long drawable)
 {
 	static querydrawable_t qd;
 	FILE *f = fopen(REC_ON, "r");
-	int ok = f && fscanf(f, "%d %d %d", &c.w, &c.h, &c.fps) == 3;
+	c.probe = 0;
+	int ok = f && fscanf(f, "%d %d %d %c", &c.w, &c.h, &c.fps, &c.probe) >= 3;
 	if (f)
 		fclose(f);
 	if (!ok || c.w < 64 || c.h < 64 || c.w > 1920 || c.h > 1080 || c.w % 8 || c.h % 4 ||
@@ -366,7 +379,8 @@ static int start(void *dpy, unsigned long drawable)
 	c.taken = c.dropped = 0;
 	c.next = now();
 	c.on = 1;
-	fprintf(stderr, "mc-record: recording %dx%d at %d fps from %ux%u\n", c.w, c.h, c.fps, c.sw, c.sh);
+	fprintf(stderr, "mc-record: recording %dx%d at %d fps from %ux%u%s%c\n", c.w, c.h, c.fps, c.sw, c.sh,
+		c.probe ? ", probe " : "", c.probe ? c.probe : ' ');
 	return 0;
 }
 
@@ -382,22 +396,36 @@ static void take(void)
 		return;
 	int k = c.k, old = (k + 1) % SLOTS;	/* = k - (SLOTS - 1) */
 
-	/* 1. the shown frame into a texture */
-	ActiveTexture(GL_TEXTURE0);
-	BindFramebuffer(GL_FRAMEBUFFER_EXT, 0);	/* its read buffer is what is being drawn */
-	glBindTexture(GL_TEXTURE_2D, c.src);
-	glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, c.sw, c.sh);
+	if (c.probe == 'd') {	/* ends the window's render here, nothing else */
+		glFlush();
+		c.taken++;
+		return;
+	}
+	glDisable(GL_SCISSOR_TEST);	/* it clips blits too */
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+	/* 1. the shown frame, scaled to WxH, into a texture: a blit costs what its
+	 *    destination does, so a small recording reads little */
+	if (c.probe != 'c' || !c.taken) {
+		BindFramebuffer(GL_READ_FRAMEBUFFER_EXT, 0);	/* its read buffer is what is being drawn */
+		BindFramebuffer(GL_DRAW_FRAMEBUFFER_EXT, c.sfbo);
+		BlitFramebuffer(0, 0, c.sw, c.sh, 0, 0, c.w, c.h, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+	}
+	if (c.probe == 'b') {
+		c.taken++;
+		return;
+	}
 
 	/* 2. I420 into this capture's target */
+	ActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, c.src);
 	BindFramebuffer(GL_FRAMEBUFFER_EXT, c.fbo[k]);
 	glViewport(0, 0, c.w / 4, c.h * 3 / 2);
 	glDisable(GL_BLEND);
 	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_SCISSOR_TEST);
 	glDisable(GL_STENCIL_TEST);
 	glDisable(GL_CULL_FACE);
 	glDisable(GL_ALPHA_TEST);
-	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	UseProgram(c.prog);
 	Uniform1i(c.u_src, 0);
 	Uniform2f(c.u_size, c.w, c.h);
@@ -407,9 +435,11 @@ static void take(void)
 	glVertex2f(1, 1);
 	glVertex2f(-1, 1);
 	glEnd();
-	c.packed[k] = 1;
 	c.k = old;
 	c.taken++;
+	if (c.probe == 'c')
+		return;
+	c.packed[k] = 1;
 
 	/* 3. the oldest target: its render finished long ago, so this read does not
 	 *    wait. Exactly RGBA/UNSIGNED_BYTE from RGBA8, into client memory. */
@@ -458,9 +488,10 @@ void capture_frame(void *dpy, unsigned long drawable)
 	if (!c.on && want && retry && retry--)
 		return;	/* waiting for ffmpeg: check a few frames apart */
 
-	GLint prog, fbo, pbo;
+	GLint prog, fbo, rfbo, pbo;
 	glGetIntegerv(GL_CURRENT_PROGRAM, &prog);
 	glGetIntegerv(GL_FRAMEBUFFER_BINDING_EXT, &fbo);
+	glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING_EXT, &rfbo);
 	glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &pbo);
 	glPushAttrib(GL_ENABLE_BIT | GL_COLOR_BUFFER_BIT | GL_VIEWPORT_BIT | GL_TEXTURE_BIT |
 		     GL_PIXEL_MODE_BIT | GL_SCISSOR_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
@@ -488,6 +519,7 @@ void capture_frame(void *dpy, unsigned long drawable)
 	glPopClientAttrib();
 	glPopAttrib();
 	BindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
-	BindFramebuffer(GL_FRAMEBUFFER_EXT, fbo);
+	BindFramebuffer(GL_DRAW_FRAMEBUFFER_EXT, fbo);
+	BindFramebuffer(GL_READ_FRAMEBUFFER_EXT, rfbo);
 	UseProgram(prog);
 }
