@@ -131,11 +131,13 @@ than slowing the game. `MC_REC_SIZE` (default: the panel), `MC_REC_FPS`
 stops itself 200 MB short of a full disk. A recording cut short by a crash or
 power loss still plays.
 
-Recording costs the game frames: on an EA-3 with Mesa sgx 0.2.x, about 30%
-(19 fps in a world becomes 13), at any size. Nearly all of it is the driver
-making the frame's readback wait for the GPU. Fewer frames cost less:
-`MC_REC_FPS=8` costs about 20%. To record without slowing the game, use an HDMI
-capture card on the box's HDMI output.
+Recording costs the game some frames. On an EA-3 with Mesa sgx 0.2.x, a world
+at 19 fps runs at about 17 while recording at 360x240, and about 13.5 at
+720x480, where the x264 encoder competes with the game for the CPU. The launcher
+sets `SGX_SLOTS=6` for this: Mesa sgx's default of 4 GPU renders in flight
+leaves room for only one frame once a recording adds its two, and that cost
+30%. To record without slowing the game, use an HDMI capture card on the box's
+HDMI output.
 
 ## Controller layout (Xbox)
 
