@@ -1,7 +1,7 @@
 name: build
 
 # Two artifacts, attached to a release when one is published:
-#   runtime-i386.tar.xz        the i386 game runtime (Debian + Xvfb + gl4es + Java 8)
+#   runtime-amd64.tar.xz       the game runtime (Debian + Xorg + Mesa for the SGX545 + Java 8)
 #   openhc-minecraft-ea.tar.gz what goes on the box itself, rooted at /
 #                              (mc-inputd, mc-fetch, mc-session, mc-install, S96minecraft)
 on:
@@ -23,12 +23,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Host tools
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends debootstrap xz-utils
-      - name: Build the i386 runtime
+      - name: Build the runtime
         run: sudo ./runtime/build-runtime.sh out
       - uses: actions/upload-artifact@v4
         with:
-          name: runtime-i386
-          path: out/runtime-i386.tar.xz
+          name: runtime-amd64
+          path: out/runtime-amd64.tar.xz
           if-no-files-found: error
 
   box:

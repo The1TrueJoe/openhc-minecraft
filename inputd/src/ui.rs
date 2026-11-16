@@ -1,9 +1,7 @@
-//! What the game's overlay draws: the pointer in menus and the on-screen keyboard.
+//! What the game's overlay draws: the on-screen keyboard.
 //!
-//! The game's window lives on a virtual X server and its picture reaches the panel
-//! through gl4es, so no X cursor is ever seen. The overlay (runtime/overlay/
-//! mc-overlay.c, loaded into the game as its libGL) draws one, and the keyboard,
-//! over every frame. mc-inputd owns that state and publishes it here: a small file
+//! The overlay (runtime/overlay/mc-overlay.c, loaded into the game as its libGL)
+//! draws it over every frame; the pointer is the X server's own cursor. mc-inputd owns that state and publishes it here: a small file
 //! in /tmp (shared with the game's root by mc-session's bind mount) that both
 //! sides map. The layout of `Shared` and of the keyboard must match mc-overlay.c.
 
@@ -84,7 +82,7 @@ pub enum Key {
     Enter,
 }
 
-/// Four rows of ten character keys (US layout, as Xvfb's default keymap types
+/// Four rows of ten character keys (US layout, as the X server's default keymap types
 /// them), then a bottom row of four wide keys over columns 0-1, 2-5, 6-7, 8-9.
 pub const ROWS: usize = 5;
 pub const COLS: usize = 10;

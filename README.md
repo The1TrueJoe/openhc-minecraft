@@ -12,36 +12,31 @@ EA only for now (EA-1/EA-3: Atom CE5310, PowerVR SGX545).
  USB keyboard / mouse / Xbox pad (hub ok)
         │  evdev (openHC usb-input feature: usbhid, xpad, uinput)
         ▼
- mc-inputd (x86_64, on the box) ──XTest──► Xvfb :0 ◄── LWJGL 2 window + input
+ mc-inputd (x86_64, on the box) ──XTest──► Xorg :0 on the panel ◄── LWJGL 2 window + input
                                                   │
- Minecraft 1.7.10 on a 32-bit Java 8 ─────────────┘
-        │  OpenGL 2.1
+ Minecraft 1.7.10 on a 64-bit Java 8 ─────────────┘
+        │  OpenGL 2.1 (GLX)
         ▼
- mc-overlay (pointer + on-screen keyboard, from mc-inputd's /tmp/mc-ui)
+ mc-overlay (on-screen keyboard, from mc-inputd's /tmp/mc-ui)
         ▼
- gl4es (GL → GLES2, framebuffer mode) → PowerVR DDK 1.7 GLES2/EGL (LinuxFB WSEGL)
+ glvnd → Mesa's sgx driver (powervr_sgx's mesa-sgx package, in the root)
         ▼
- sgx545ce kernel driver (32-on-64 bridge compat) → SGX545 → /dev/fb0 → HDMI
+ powervr_sgx kernel driver → SGX545 → Xorg (modesetting + glamor, simpledrm) → HDMI
 ```
 
-The box is a 64-bit system: openHC's kernel and userspace are x86_64, and so is
-mc-inputd. Only the one process that draws with the GPU is 32-bit. The only
-SGX545 userspace that exists is Intel's i386 Cedarview DDK. A process can only
-load libraries built for its own architecture, so the game, gl4es and the JVM
-run as i386 programs under the kernel's IA32 emulation. They sit in a Debian
-bookworm i386 root at `/opt/minecraft/rootfs`. openHC's on-screen WebKit view
-on the EA works the same way.
+Everything is 64-bit. The game, Java and Mesa sit in a Debian trixie amd64 root
+at `/opt/minecraft/rootfs`; Xorg runs from it too, on the box's boot framebuffer
+with the GPU drawing through glamor. Mesa comes from the powervr_sgx release the
+box's kernel driver is at (`MESA_VERSION` in `runtime/build-runtime.sh`).
 
 ## What it needs from openHC
 
 This repo only holds what is specific to running Minecraft. Everything generic lives
 upstream in openHC, so it needs an EA image with:
 - the `usb-input` feature (xpad, joydev, uinput, gamepad HID drivers);
-- the sgx545ce driver with the GL-client bridge compat and the device LISR. Without
-  the LISR every GPU wait runs its 100 ms timeout and the game crawls at ~1 FPS;
-- `S60sgx`, which brings the GPU's services up at boot, and `S03growfs`, which grows the
-  root filesystem to fill its eMMC partition;
-- the bus-id shim that loads libdrm itself.
+- the open powervr_sgx kernel driver and its firmware, at the release the runtime's
+  Mesa is built for (`mc-session` will not start without it);
+- `S03growfs`, which grows the root filesystem to fill its eMMC partition.
 
 ## Install on a box
 
@@ -69,15 +64,15 @@ The game runs in offline mode. Singleplayer works, and so do servers with
 `online-mode=false`.
 
 On its first run the game starts with light video settings and a render distance
-of 3 chunks. The GPU's frame rate follows how much world it draws: on an EA1,
-2 chunks run at about 54 FPS, 3 at about 42 and 4 at about 29. Change it in
+of 3 chunks. The GPU's frame rate follows how much world it draws: on an EA1
+with Intel's DDK, 2 chunks ran at about 54 FPS, 3 at about 42 and 4 at about 29. Change it in
 Options → Video Settings; the game keeps what you pick.
 
 ## OptiFine (recommended)
 
 OptiFine makes the game noticeably faster here. In the same overworld view on an
-EA1, vanilla runs about 39 FPS at 3 chunks; OptiFine runs about 55 at 3 chunks and
-47 at 4. Its licence doesn't allow bundling it, so the box fetches it from
+EA1 with Intel's DDK, vanilla ran about 39 FPS at 3 chunks; OptiFine ran about 55 at
+3 chunks and 47 at 4. Its licence doesn't allow bundling it, so the box fetches it from
 optifine.net itself (or you pass it the installer jar you downloaded):
 
 ```bash
@@ -125,8 +120,8 @@ in the game's classes as they load:
 | Start / Guide | pause (Esc) | back |
 | Back | chat, with the on-screen keyboard | on-screen keyboard |
 
-The panel shows no X cursor (the picture never goes through X), so the overlay
-draws the pointer whenever a menu is up, for a mouse as well as a pad.
+The pointer is the X server's own cursor, shown whenever a menu is up, for a
+mouse as well as a pad.
 
 **On-screen keyboard.** Back opens it — over a menu's text field, or with chat
 from the world, where it sits at the top of the screen, clear of the chat line.
@@ -145,7 +140,7 @@ is ignored by default.
 |---|---|
 | `inputd/` | `mc-inputd` (evdev → XTest) and `mc-fetch` (HTTPS for the box), Rust, static musl |
 | `box/` | what goes on the box: `mc-session`, `mc-install`, `S96minecraft` |
-| `runtime/` | builds `runtime-i386.tar.xz`: Debian i386 + Xvfb + gl4es + the overlay + the game fixes (`mod/`) + Zulu 8 i686 + launchers |
+| `runtime/` | builds `runtime-amd64.tar.xz`: Debian trixie amd64 + Xorg + Mesa (mesa-sgx) + the overlay + the game fixes (`mod/`) + Zulu 8 x64 + launchers |
 | `.github/workflows/build.yml` | builds both artifacts; attaches them to a release |
 
 ## Build
