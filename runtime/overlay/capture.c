@@ -8,10 +8,11 @@
  *      bytes, read in order, are the frame as I420 at WxH (BT.601, TV range):
  *      the GPU does the scaling and the colour conversion, and the CPU reads
  *      back 1.5 bytes a pixel instead of 4;
- *   3. read into one of three pixel-pack buffers, which the game never waits
- *      for: the buffer is mapped a frame later and a worker thread copies it
- *      out and writes it to the FIFO. A frame the worker has no time for is
- *      dropped, not waited for.
+ *   3. read back two captures later, from a ring of three such targets: a
+ *      readback waits for its render to finish (glReadPixels does, on SGX,
+ *      even into a pixel-pack buffer), and by then that render is long done,
+ *      so the game never waits. A worker thread writes the frame to the FIFO;
+ *      a frame it has no time for is dropped, not waited for.
  * Removing the file ends the recording: the FIFO closes and ffmpeg finishes.
  *
  * GL state the game had is put back: everything here is inside
@@ -37,7 +38,7 @@
 
 #define REC_ON "/tmp/mc-rec/on"
 #define REC_FIFO "/tmp/mc-rec/video"
-#define SLOTS 3
+#define SLOTS 3			/* pack targets in the ring; read SLOTS-1 captures late */
 
 /* GL 2.0 and framebuffer-object entry points, from the real libGL */
 static PFNGLCREATESHADERPROC CreateShader;
@@ -61,12 +62,7 @@ static PFNGLBINDFRAMEBUFFEREXTPROC BindFramebuffer;
 static PFNGLFRAMEBUFFERTEXTURE2DEXTPROC FramebufferTexture2D;
 static PFNGLCHECKFRAMEBUFFERSTATUSEXTPROC CheckFramebufferStatus;
 static PFNGLDELETEFRAMEBUFFERSEXTPROC DeleteFramebuffers;
-static PFNGLGENBUFFERSPROC GenBuffers;
 static PFNGLBINDBUFFERPROC BindBuffer;
-static PFNGLBUFFERDATAPROC BufferData;
-static PFNGLMAPBUFFERPROC MapBuffer;
-static PFNGLUNMAPBUFFERPROC UnmapBuffer;
-static PFNGLDELETEBUFFERSPROC DeleteBuffers;
 
 typedef void (*querydrawable_t)(void *, unsigned long, int, unsigned int *);
 #define GLX_WIDTH 0x801D
@@ -104,9 +100,7 @@ static int load(void)
 	P2(FramebufferTexture2D, "glFramebufferTexture2D", "glFramebufferTexture2DEXT");
 	P2(CheckFramebufferStatus, "glCheckFramebufferStatus", "glCheckFramebufferStatusEXT");
 	P2(DeleteFramebuffers, "glDeleteFramebuffers", "glDeleteFramebuffersEXT");
-	P(GenBuffers, "glGenBuffers"); P(BindBuffer, "glBindBuffer");
-	P(BufferData, "glBufferData"); P(MapBuffer, "glMapBuffer");
-	P(UnmapBuffer, "glUnmapBuffer"); P(DeleteBuffers, "glDeleteBuffers");
+	P(BindBuffer, "glBindBuffer");
 	return 0;
 #undef P
 #undef P2
@@ -153,9 +147,11 @@ static struct {
 	int on, broken;
 	int w, h, fps;
 	unsigned sw, sh;		/* source: the window */
-	GLuint src, dst, fbo, prog, pbo[SLOTS];
+	GLuint src, dst[SLOTS], fbo[SLOTS], prog;
 	GLint u_size, u_src;
-	int state[SLOTS];		/* FREE, PENDING (read into), MAPPED */
+	int packed[SLOTS];		/* holds a frame not read back yet */
+	int k;				/* the target the next capture packs into */
+	unsigned char *rd;		/* readback, handed to the worker */
 	int fd;
 	size_t size;
 	int room;			/* the FIFO's capacity when it holds a frame, else 0 */
@@ -163,18 +159,15 @@ static struct {
 	unsigned long taken, dropped;
 	pthread_t worker;
 } c = { .fd = -1 };
-enum { FREE, PENDING, MAPPED };
 
 /* the worker: one frame in hand at a time */
 static struct {
 	pthread_mutex_t m;
 	pthread_cond_t cv;
-	const unsigned char *in;	/* a mapped buffer to copy, or NULL */
-	int slot;			/* which, while copying */
-	int copied;			/* the slot it copied last, for the GL thread to unmap; -1 none */
+	const unsigned char *in;	/* c.rd while it holds a frame to copy, or NULL */
 	int quit;
 	unsigned char *buf;
-} w = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, NULL, -1, -1, 0, NULL };
+} w = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, NULL, 0, NULL };
 
 static void *work(void *arg)
 {
@@ -188,7 +181,6 @@ static void *work(void *arg)
 			break;
 		}
 		const unsigned char *in = w.in;
-		int slot = w.slot;
 		pthread_mutex_unlock(&w.m);
 
 		/* Only a whole frame goes in: one the encoder has no room for yet is
@@ -197,7 +189,6 @@ static void *work(void *arg)
 		if (c.room && ioctl(c.fd, FIONREAD, &queued) == 0 && (size_t)(c.room - queued) < c.size) {
 			pthread_mutex_lock(&w.m);
 			w.in = NULL;
-			w.copied = slot;
 			c.dropped++;
 			pthread_mutex_unlock(&w.m);
 			continue;
@@ -205,8 +196,7 @@ static void *work(void *arg)
 		memcpy(w.buf, in, c.size);
 
 		pthread_mutex_lock(&w.m);
-		w.in = NULL;
-		w.copied = slot;
+		w.in = NULL;		/* c.rd is free for the next readback */
 		pthread_mutex_unlock(&w.m);
 
 		for (size_t off = 0; off < c.size;) {
@@ -256,19 +246,14 @@ static void teardown(void)
 {
 	if (c.prog)
 		DeleteProgram(c.prog);
-	if (c.fbo)
-		DeleteFramebuffers(1, &c.fbo);
+	DeleteFramebuffers(SLOTS, c.fbo);
 	glDeleteTextures(1, &c.src);
-	glDeleteTextures(1, &c.dst);
-	for (int i = 0; i < SLOTS; i++) {
-		if (c.state[i] == MAPPED) {
-			BindBuffer(GL_PIXEL_PACK_BUFFER, c.pbo[i]);
-			UnmapBuffer(GL_PIXEL_PACK_BUFFER);
-		}
-		c.state[i] = FREE;
-	}
-	DeleteBuffers(SLOTS, c.pbo);
-	c.src = c.dst = c.fbo = c.prog = 0;
+	glDeleteTextures(SLOTS, c.dst);
+	for (int i = 0; i < SLOTS; i++)
+		c.dst[i] = c.fbo[i] = c.packed[i] = 0;
+	free(c.rd);
+	c.rd = NULL;
+	c.src = c.prog = 0;
 }
 
 /* GL objects for a recording at c.w x c.h from a c.sw x c.sh window */
@@ -298,24 +283,22 @@ static int setup(void)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, c.sw, c.sh, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
-	glGenTextures(1, &c.dst);
-	glBindTexture(GL_TEXTURE_2D, c.dst);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, c.w / 4, c.h * 3 / 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-	GenFramebuffers(1, &c.fbo);
-	BindFramebuffer(GL_FRAMEBUFFER_EXT, c.fbo);
-	FramebufferTexture2D(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, c.dst, 0);
-	if (CheckFramebufferStatus(GL_FRAMEBUFFER_EXT) != GL_FRAMEBUFFER_COMPLETE_EXT)
-		return -1;
-
-	GenBuffers(SLOTS, c.pbo);
+	glGenTextures(SLOTS, c.dst);
+	GenFramebuffers(SLOTS, c.fbo);
 	for (int i = 0; i < SLOTS; i++) {
-		BindBuffer(GL_PIXEL_PACK_BUFFER, c.pbo[i]);
-		BufferData(GL_PIXEL_PACK_BUFFER, c.size, NULL, GL_STREAM_READ);
-		c.state[i] = FREE;
+		glBindTexture(GL_TEXTURE_2D, c.dst[i]);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, c.w / 4, c.h * 3 / 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+		BindFramebuffer(GL_FRAMEBUFFER_EXT, c.fbo[i]);
+		FramebufferTexture2D(GL_FRAMEBUFFER_EXT, GL_COLOR_ATTACHMENT0_EXT, GL_TEXTURE_2D, c.dst[i], 0);
+		if (CheckFramebufferStatus(GL_FRAMEBUFFER_EXT) != GL_FRAMEBUFFER_COMPLETE_EXT)
+			return -1;
+		c.packed[i] = 0;
 	}
-	return glGetError() == GL_NO_ERROR ? 0 : -1;
+	c.k = 0;
+	c.rd = malloc(c.size);
+	return c.rd && glGetError() == GL_NO_ERROR ? 0 : -1;
 }
 
 /* Ends the recording; called with GL state saved. */
@@ -378,7 +361,6 @@ static int start(void *dpy, unsigned long drawable)
 		return -1;
 	}
 	w.in = NULL;
-	w.copied = -1;
 	w.quit = 0;
 	pthread_create(&c.worker, NULL, work, NULL);
 	c.taken = c.dropped = 0;
@@ -388,58 +370,17 @@ static int start(void *dpy, unsigned long drawable)
 	return 0;
 }
 
-/* One captured frame: GPU copy + convert + readback into a free slot, and the
- * previous one handed to the worker. Called with GL state saved. */
+/* One captured frame: GPU copy + convert into the ring, and the frame packed
+ * two captures ago read back and handed to the worker. Called with GL state
+ * saved. */
 static void take(void)
 {
-	int quit;
 	pthread_mutex_lock(&w.m);
-	quit = w.quit;
-	int copied = w.copied, busy = w.in != NULL;
-	w.copied = -1;
+	int quit = w.quit, busy = w.in != NULL;
 	pthread_mutex_unlock(&w.m);
 	if (quit)
 		return;
-
-	if (copied >= 0) {
-		BindBuffer(GL_PIXEL_PACK_BUFFER, c.pbo[copied]);
-		UnmapBuffer(GL_PIXEL_PACK_BUFFER);
-		c.state[copied] = FREE;
-	}
-
-	/* the frame read last time goes to the worker, if it has room */
-	for (int i = 0; i < SLOTS; i++) {
-		if (c.state[i] != PENDING)
-			continue;
-		if (busy) {
-			c.state[i] = FREE;
-			c.dropped++;
-			continue;
-		}
-		BindBuffer(GL_PIXEL_PACK_BUFFER, c.pbo[i]);
-		const unsigned char *p = MapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
-		if (!p) {
-			c.state[i] = FREE;
-			c.dropped++;
-			continue;
-		}
-		c.state[i] = MAPPED;
-		pthread_mutex_lock(&w.m);
-		w.in = p;
-		w.slot = i;
-		pthread_cond_signal(&w.cv);
-		pthread_mutex_unlock(&w.m);
-		busy = 1;
-	}
-
-	int slot = -1;
-	for (int i = 0; i < SLOTS && slot < 0; i++)
-		if (c.state[i] == FREE)
-			slot = i;
-	if (slot < 0) {
-		c.dropped++;
-		return;
-	}
+	int k = c.k, old = (k + 1) % SLOTS;	/* = k - (SLOTS - 1) */
 
 	/* 1. the shown frame into a texture */
 	ActiveTexture(GL_TEXTURE0);
@@ -447,8 +388,8 @@ static void take(void)
 	glBindTexture(GL_TEXTURE_2D, c.src);
 	glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, c.sw, c.sh);
 
-	/* 2. I420 into the target */
-	BindFramebuffer(GL_FRAMEBUFFER_EXT, c.fbo);
+	/* 2. I420 into this capture's target */
+	BindFramebuffer(GL_FRAMEBUFFER_EXT, c.fbo[k]);
 	glViewport(0, 0, c.w / 4, c.h * 3 / 2);
 	glDisable(GL_BLEND);
 	glDisable(GL_DEPTH_TEST);
@@ -466,14 +407,28 @@ static void take(void)
 	glVertex2f(1, 1);
 	glVertex2f(-1, 1);
 	glEnd();
+	c.packed[k] = 1;
+	c.k = old;
+	c.taken++;
 
-	/* 3. into a pixel-pack buffer, collected next time */
-	BindBuffer(GL_PIXEL_PACK_BUFFER, c.pbo[slot]);
+	/* 3. the oldest target: its render finished long ago, so this read does not
+	 *    wait. Exactly RGBA/UNSIGNED_BYTE from RGBA8, into client memory. */
+	if (!c.packed[old])
+		return;
+	c.packed[old] = 0;
+	if (busy) {	/* the worker still has the last one */
+		c.dropped++;
+		return;
+	}
+	BindFramebuffer(GL_FRAMEBUFFER_EXT, c.fbo[old]);
+	BindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 	glPixelStorei(GL_PACK_ALIGNMENT, 4);
 	glPixelStorei(GL_PACK_ROW_LENGTH, 0);
-	glReadPixels(0, 0, c.w / 4, c.h * 3 / 2, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-	c.state[slot] = PENDING;
-	c.taken++;
+	glReadPixels(0, 0, c.w / 4, c.h * 3 / 2, GL_RGBA, GL_UNSIGNED_BYTE, c.rd);
+	pthread_mutex_lock(&w.m);
+	w.in = c.rd;
+	pthread_cond_signal(&w.cv);
+	pthread_mutex_unlock(&w.m);
 }
 
 void capture_frame(void *dpy, unsigned long drawable)

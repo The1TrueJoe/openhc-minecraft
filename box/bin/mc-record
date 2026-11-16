@@ -56,12 +56,14 @@ start() {
 		log "no ALSA loopback (snd-aloop): recording without sound"
 	fi
 
-	# wallclock timestamps on both inputs keep picture and sound together; the
-	# output is constant-rate. -fs stops before the disk fills.
+	# wallclock timestamps on both inputs keep picture and sound together; a
+	# frame reaches the FIFO two captures after it was shown, hence the offset.
+	# The output is constant-rate. -fs stops before the disk fills.
+	lag=$(awk "BEGIN { printf \"%.3f\", -2 / $fps }")
 	chroot "$R" /usr/bin/env -i HOME=/root PATH=/usr/local/bin:/usr/bin:/bin \
 		nice -n 10 /usr/local/bin/ffmpeg -nostdin -hide_banner -loglevel warning -y \
 		-f rawvideo -pix_fmt yuv420p -video_size ${w}x${h} -framerate $fps \
-		-use_wallclock_as_timestamps 1 -thread_queue_size 64 -i $D/video \
+		-use_wallclock_as_timestamps 1 -itsoffset $lag -thread_queue_size 64 -i $D/video \
 		$audio \
 		-map 0:v $amap -fps_mode cfr -r $fps \
 		-c:v libx264 -preset ultrafast -crf "${MC_REC_CRF:-23}" -g $((fps * 2)) -pix_fmt yuv420p \
