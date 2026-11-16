@@ -1,0 +1,109 @@
+#!/bin/sh
+# mc-record {start|stop|toggle|status|list} — record the running game to MP4.
+#
+# Video comes from the game itself: mc-overlay converts each frame on the GPU
+# (runtime/overlay/capture.c) and hands it over a FIFO; the game's sound comes
+# from the ALSA loopback mc-session tees it into. ffmpeg (x264 + AAC, in the
+# runtime) runs below the game's priority, and a frame it has no time for is
+# dropped rather than slowing the game down.
+#
+# Files go to /opt/minecraft/rootfs/opt/minecraft/recordings, as fragmented MP4:
+# a recording cut short (power, crash) still plays. Copy them off with scp.
+#
+# Env for start: MC_REC_SIZE  WxH (default: the panel; width a multiple of 8,
+#                             height of 4 — 360x240 costs the game least)
+#                MC_REC_FPS   frames per second (default 30)
+#                MC_REC_CRF   x264 quality, lower is better and bigger (default 23)
+M=/opt/minecraft
+R=$M/rootfs
+D=/tmp/mc-rec
+OUT=/opt/minecraft/recordings	# inside the root
+KEEP_MB=200			# free space a recording leaves on the disk
+
+log() { echo "mc-record: $*"; }
+die() { log "$*"; exit 1; }
+
+recording() { [ -f $D/pid ] && kill -0 "$(cat $D/pid)" 2>/dev/null; }
+
+panel_size() {
+	s=$(cat /sys/class/drm/card0-*/modes 2>/dev/null | head -n 1)
+	echo "${s:-720x480}"
+}
+
+start() {
+	"$M/bin/mc-session" status >/dev/null 2>&1 || die "the game is not running (mc-session start)"
+	recording && die "already recording to $(cat $D/file)"
+	size=${MC_REC_SIZE:-$(panel_size)}
+	w=${size%x*}; h=${size#*x}
+	fps=${MC_REC_FPS:-30}
+	case "$w$h$fps" in *[!0-9]*|"") die "MC_REC_SIZE is WxH, MC_REC_FPS a number" ;; esac
+	w=$((w / 8 * 8)); h=$((h / 4 * 4))
+	[ $w -ge 64 ] && [ $h -ge 64 ] || die "size $size is too small"
+
+	mkdir -p "$R$OUT"
+	free=$(df -m "$R$OUT" | awk 'NR==2 {print $4}')
+	[ "$free" -gt $((KEEP_MB + 100)) ] || die "only ${free} MB free on the disk"
+
+	rm -rf $D
+	mkdir -p $D
+	mkfifo -m 600 $D/video
+	file=$OUT/mc-$(date +%Y%m%d-%H%M%S).mp4
+	audio=
+	if [ -e /proc/asound/Loopback ]; then
+		audio="-f alsa -thread_queue_size 1024 -sample_rate 48000 -channels 2 -i hw:Loopback,1,0"
+		amap="-map 1:a -c:a aac -b:a 128k"
+	else
+		log "no ALSA loopback (snd-aloop): recording without sound"
+	fi
+
+	# wallclock timestamps on both inputs keep picture and sound together; a
+	# frame reaches the FIFO two captures after it was shown, hence the offset.
+	# The output is constant-rate. -fs stops before the disk fills.
+	lag=$(awk "BEGIN { printf \"%.3f\", -2 / $fps }")
+	chroot "$R" /usr/bin/env -i HOME=/root PATH=/usr/local/bin:/usr/bin:/bin \
+		nice -n 10 /usr/local/bin/ffmpeg -nostdin -hide_banner -loglevel warning -y \
+		-f rawvideo -pix_fmt yuv420p -video_size ${w}x${h} -framerate $fps \
+		-use_wallclock_as_timestamps 1 -itsoffset $lag -thread_queue_size 64 -i $D/video \
+		$audio \
+		-map 0:v $amap -fps_mode cfr -r $fps \
+		-c:v libx264 -preset ultrafast -crf "${MC_REC_CRF:-23}" -g $((fps * 2)) -pix_fmt yuv420p \
+		-color_range tv -colorspace smpte170m -color_primaries smpte170m -color_trc smpte170m \
+		-fs $(((free - KEEP_MB) * 1024 * 1024)) -shortest \
+		-movflags +frag_keyframe+empty_moov+default_base_moof "$file" \
+		>$D/ffmpeg.log 2>&1 &
+	echo $! > $D/pid
+	echo "$file" > $D/file
+	# the game's capture starts when it sees this, once ffmpeg has the FIFO open
+	echo "$w $h $fps" > $D/on
+	log "recording ${w}x${h} at $fps fps to $R$file"
+}
+
+stop() {
+	[ -f $D/pid ] || { log "not recording"; return 0; }
+	pid=$(cat $D/pid)
+	rm -f $D/on	# the game closes the FIFO; ffmpeg finishes the file
+	# If the game never opened it, ffmpeg is still blocked opening it: a
+	# read-write open never blocks, lets that open through and closes at once.
+	[ -p $D/video ] && : <>$D/video
+	i=0
+	while kill -0 "$pid" 2>/dev/null && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
+	kill -INT "$pid" 2>/dev/null
+	i=0
+	while kill -0 "$pid" 2>/dev/null && [ $i -lt 10 ]; do sleep 0.5; i=$((i+1)); done
+	kill "$pid" 2>/dev/null
+	sleep 1
+	kill -9 "$pid" 2>/dev/null
+	f=$R$(cat $D/file)
+	grep -v "^$" $D/ffmpeg.log 2>/dev/null | tail -n 3
+	rm -f $D/pid $D/video
+	[ -s "$f" ] && log "saved $f ($(du -h "$f" | cut -f1))" || log "nothing recorded"
+}
+
+case "$1" in
+	start)	start ;;
+	stop)	stop ;;
+	toggle)	if recording; then stop; else start; fi ;;
+	status)	if recording; then echo "recording to $R$(cat $D/file)"; else echo "not recording"; exit 1; fi ;;
+	list)	ls -lh "$R$OUT" 2>/dev/null ;;
+	*)	echo "usage: $0 {start|stop|toggle|status|list}"; exit 1 ;;
+esac

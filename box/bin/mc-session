@@ -49,7 +49,70 @@ audio_conf() {
 		     /type ohceq/ { eq = name }
 		     eq != "" && /slave\.pcm/ {
 			print "pcm.!" eq " { type plug slave.pcm " $2 " }"; eq = "" }' /etc/asound.conf
+		record_tap
 	} > "$R/etc/asound.conf"
+}
+
+# mc-record takes the game's sound from the ALSA loopback: the game's default
+# plays to the box's default and, in step, to the loopback's playback side; its
+# capture side (hw:Loopback,1,0) is what a recording reads. The loopback runs on
+# the timer of the card the default plays on, so the two never drift apart (on
+# any other card's timer the loopback stalls whenever that card is idle, and the
+# game's sound underruns). Without the module the game just plays as before, and
+# recordings have no sound.
+record_tap() {
+	def=$(sed -n 's/^pcm\.!default "\(.*\)"$/\1/p' /etc/asound.conf | tail -n 1)
+	[ -n "$def" ] || return 0
+	card=$(awk -v d="pcm.${def}_dmix" '$1 == d { f = 1 }
+		f && /pcm "hw:/ { match($0, /CARD=[^,"]*/); print substr($0, RSTART + 5, RLENGTH - 5); exit }' /etc/asound.conf)
+	src=$(cut -d, -f1 /sys/module/snd_aloop/parameters/timer_source 2>/dev/null)
+	if [ -e /proc/asound/Loopback ] && [ "$src" != "$card" ]; then
+		rmmod snd_aloop 2>/dev/null	# not while something has it open; then it stays as it is
+	fi
+	[ -e /proc/asound/Loopback ] || modprobe snd-aloop pcm_substreams=1 ${card:+timer_source=$card} 2>/dev/null ||
+		modprobe snd-aloop pcm_substreams=1 2>/dev/null || return 0
+	[ -e /proc/asound/Loopback ] || return 0
+	cat <<-EOF
+
+	# mc-session: the game's sound to the box's default and to the loopback
+	pcm.mc_loop {
+	    type dmix
+	    ipc_key 7190
+	    ipc_perm 0666
+	    slave {
+	        pcm "hw:Loopback,0,0"
+	        rate 48000
+	        format S16_LE
+	        channels 2
+	        period_size 1024
+	        buffer_size 8192
+	    }
+	}
+	pcm.mc_both {
+	    type multi
+	    slaves.a.pcm "$def"
+	    slaves.a.channels 2
+	    slaves.b.pcm "mc_loop"
+	    slaves.b.channels 2
+	    bindings.0 { slave a; channel 0; }
+	    bindings.1 { slave a; channel 1; }
+	    bindings.2 { slave b; channel 0; }
+	    bindings.3 { slave b; channel 1; }
+	}
+	pcm.mc_tee {
+	    type route
+	    slave.pcm "mc_both"
+	    ttable.0.0 1
+	    ttable.1.1 1
+	    ttable.0.2 1
+	    ttable.1.3 1
+	}
+	pcm.mc_game {
+	    type plug
+	    slave.pcm "mc_tee"
+	}
+	pcm.!default "mc_game"
+	EOF
 }
 
 mounts() {
@@ -110,6 +173,7 @@ run() {
 		MC_WIDTH=$W MC_HEIGHT=$H inchroot /usr/bin/env MC_WIDTH=$W MC_HEIGHT=$H \
 			/usr/local/bin/minecraft "${1:-Player}"
 		log "game exited ($?)"
+		"$M/bin/mc-record" stop >/dev/null 2>&1
 	else
 		log "Xorg did not start (/tmp/mc-xorg.log)"
 	fi
@@ -143,6 +207,7 @@ case "$1" in
 			while kill -0 "$pid" 2>/dev/null && [ $i -lt 20 ]; do sleep 0.5; i=$((i+1)); done
 			kill "$pid" 2>/dev/null
 		fi
+		"$M/bin/mc-record" stop >/dev/null 2>&1
 		killall Xorg mc-inputd 2>/dev/null
 		rm -f $PIDF ;;
 	status)

@@ -36,6 +36,10 @@ LW_URL=https://libraries.minecraft.net/net/minecraft/launchwrapper/1.12/launchwr
 LW_SHA1=111e7bea9c968cdb3d06ef4632bf7ff0824d0f36
 ASM_URL=https://libraries.minecraft.net/org/ow2/asm/asm-all/5.0.3/asm-all-5.0.3.jar
 ASM_SHA1=4333508b8dd8ee72aa4e39afa713b3a74579b773
+# mc-record's encoder: a small static ffmpeg with only what recording uses.
+FFMPEG_VERSION=7.1.5
+FFMPEG_URL=https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz
+FFMPEG_SHA256=de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f
 
 R="$OUT/root"
 rm -rf "$R"
@@ -47,7 +51,7 @@ PKGS=(
   xserver-xorg-core x11-xkb-utils xkb-data
   libgl1 libglx0 libegl1 libgles2
   libx11-6 libxext6 libxcursor1 libxrandr2 libxxf86vm1 libxrender1 libxtst6 libxi6 libxinerama1
-  libfreetype6 libfontconfig1 fonts-dejavu-core libasound2t64 libdrm2
+  libfreetype6 libfontconfig1 fonts-dejavu-core libasound2t64 libdrm2 libx264-164
   ca-certificates wget unzip procps
 )
 debootstrap --arch=amd64 --variant=minbase --include="$(IFS=,; echo "${PKGS[*]}")" \
@@ -67,7 +71,7 @@ chroot "$R" sh -ec "
 rm -f "$R/tmp/$MESA_DEB"
 umount "$R/proc"; trap - EXIT
 
-# --- the overlay and the mod: built in a throwaway copy of the root, so no toolchain ships ---
+# --- the overlay, the mod and ffmpeg: built in a throwaway copy of the root, so no toolchain ships ---
 B="$OUT/build-root"
 rm -rf "$B"
 cp -a "$R" "$B"
@@ -78,15 +82,15 @@ mount --bind /proc "$B/proc"
 trap 'umount "$B/proc" 2>/dev/null || true' EXIT
 chroot "$B" sh -ec "
   DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends build-essential libgl-dev \\
-    libfreetype-dev pkg-config openjdk-21-jdk-headless
+    libfreetype-dev pkg-config openjdk-21-jdk-headless nasm libx264-dev libasound2-dev xz-utils
   # The overlay is LWJGL's libGL.so.1 and needs the real one -- also libGL.so.1 --
   # under it. It names that by path: link against a stub whose soname is the path.
   # -march=bonnell: the EA's Atom CE5310 (SSSE3, MOVBE).
   cd /tmp/overlay
   gcc -shared -o libgl-stub.so -Wl,-soname,/usr/lib/x86_64-linux-gnu/libGL.so.1 -x c /dev/null
-  gcc -O2 -march=bonnell -Wall -shared -fPIC -Wl,-soname,libGL.so.1 -o libGL.so.1 mc-overlay.c \\
+  gcc -O2 -march=bonnell -Wall -shared -fPIC -Wl,-soname,libGL.so.1 -o libGL.so.1 mc-overlay.c capture.c \\
       \$(pkg-config --cflags freetype2) \\
-      -Wl,--no-as-needed ./libgl-stub.so \$(pkg-config --libs freetype2) -ldl
+      -Wl,--no-as-needed ./libgl-stub.so \$(pkg-config --libs freetype2) -ldl -lpthread
   gcc -O2 -Wall -o /tmp/tools/mc-gpucheck /tmp/tools/mc-gpucheck.c
   # openHC's launchwrapper tweaker, for the game's Java 8
   cd /tmp/mod
@@ -94,10 +98,26 @@ chroot "$B" sh -ec "
   printf '%s  %s\\n' $LW_SHA1 launchwrapper-1.12.jar $ASM_SHA1 asm-all-5.0.3.jar | sha1sum -c --quiet
   javac --release 8 -cp launchwrapper-1.12.jar:asm-all-5.0.3.jar -d classes \$(find src -name '*.java')
   jar cf openhc-mc.jar -C classes .
+  # ffmpeg for mc-record: raw I420 from a FIFO and the ALSA loopback in,
+  # x264 + AAC out to MP4/Matroska
+  cd /tmp
+  wget -q $FFMPEG_URL
+  echo '$FFMPEG_SHA256  ffmpeg-$FFMPEG_VERSION.tar.xz' | sha256sum -c --quiet
+  tar xJf ffmpeg-$FFMPEG_VERSION.tar.xz
+  cd ffmpeg-$FFMPEG_VERSION
+  ./configure --disable-everything --disable-autodetect --disable-doc --disable-debug \\
+      --disable-ffplay --disable-ffprobe --disable-network --enable-gpl --enable-libx264 --enable-alsa \\
+      --enable-encoder=libx264,aac --enable-decoder=rawvideo,pcm_s16le --enable-demuxer=rawvideo \\
+      --enable-muxer=mp4,matroska --enable-protocol=file,pipe --enable-indev=alsa \\
+      --enable-filter=buffer,buffersink,abuffer,abuffersink,aresample,aformat,format,null,anull,scale,fps \\
+      --extra-cflags='-march=bonnell -mtune=bonnell' >/dev/null
+  make -j\$(nproc) ffmpeg >/dev/null
+  strip ffmpeg
 "
 umount "$B/proc"; trap - EXIT
 install -D -m 0755 "$B/tmp/overlay/libGL.so.1" "$R/usr/lib/mc-overlay/libGL.so.1"
 install -D -m 0644 "$B/tmp/mod/openhc-mc.jar" "$R/usr/lib/openhc-mc/openhc-mc.jar"
+install -D -m 0755 "$B/tmp/ffmpeg-$FFMPEG_VERSION/ffmpeg" "$R/usr/local/bin/ffmpeg"
 install -D -m 0755 "$B/tmp/tools/mc-gpucheck" "$R/usr/local/bin/mc-gpucheck"
 echo "$MESA_DRIVER $MESA_UAPI_MAJOR" > "$R/etc/openhc-minecraft-gpu"
 rm -rf "$B"

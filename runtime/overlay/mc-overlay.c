@@ -11,6 +11,8 @@
  * What to draw comes from mc-inputd, which owns the state: /tmp/mc-ui (struct
  * mcui below; must match inputd/src/ui.rs, as must the keyboard layout). The
  * pointer is the X server's own cursor.
+ *
+ * The same hook gives mc-record its video (capture.c).
  */
 #define _GNU_SOURCE
 #include <GL/gl.h>
@@ -22,6 +24,8 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
+#include "capture.h"
 
 struct mcui {
 	uint32_t magic, seq;
@@ -306,6 +310,7 @@ void glXSwapBuffers(void *dpy, unsigned long drawable)
 	if (!real)
 		real = (void (*)(void *, unsigned long))dlsym(RTLD_NEXT, "glXSwapBuffers");
 	overlay();
+	capture_frame(dpy, drawable);	/* mc-record's video, keyboard and all */
 	real(dpy, drawable);
 }
 
