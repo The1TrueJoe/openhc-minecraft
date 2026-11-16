@@ -52,6 +52,10 @@ fi
 # overlay is that libGL, and passes everything but the frame swap on to the
 # real one (glvnd, dispatching to Mesa).
 export LD_LIBRARY_PATH=/usr/lib/mc-overlay${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+# SGX_SLOTS: GPU renders Mesa sgx keeps in flight (default 4). The game takes
+# 2 a frame and a recording 2 more; at 4 the CPU then waits a whole frame.
+# 6 keeps two frames in flight (about 38 MB more GPU memory).
+export SGX_SLOTS=${SGX_SLOTS:-6}
 exec /opt/java/jre8/bin/java -server \
   -Xms256M -Xmx"${MC_XMX:-768M}" -XX:+UseConcMarkSweepGC -Djava.awt.headless=true \
   -Djava.library.path="$G/natives" \
