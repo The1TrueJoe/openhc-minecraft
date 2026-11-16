@@ -126,10 +126,16 @@ scp 'root@<box>:/opt/minecraft/rootfs/opt/minecraft/recordings/*.mp4' .
 The picture is taken inside the game's frame swap: the GPU scales each frame and
 converts it to the video's YUV format, so the CPU reads back less than half as
 much and only encodes. Frames the encoder can't keep up with are dropped rather
-than slowing the game. `MC_REC_SIZE` (for example `360x240`, the cheapest),
-`MC_REC_FPS` (default 30) and `MC_REC_CRF` (x264 quality, default 23) set a
-recording up; it stops itself 200 MB short of a full disk. A recording cut short
-by a crash or power loss still plays.
+than slowing the game. `MC_REC_SIZE` (default: the panel), `MC_REC_FPS`
+(default 30) and `MC_REC_CRF` (x264 quality, default 23) set a recording up; it
+stops itself 200 MB short of a full disk. A recording cut short by a crash or
+power loss still plays.
+
+Recording costs the game frames: on an EA-3 with Mesa sgx 0.2.x, about 30%
+(19 fps in a world becomes 13), at any size. Nearly all of it is the driver
+making the frame's readback wait for the GPU. Fewer frames cost less:
+`MC_REC_FPS=8` costs about 20%. To record without slowing the game, use an HDMI
+capture card on the box's HDMI output.
 
 ## Controller layout (Xbox)
 
